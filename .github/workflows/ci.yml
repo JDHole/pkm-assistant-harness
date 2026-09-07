@@ -1,0 +1,60 @@
+name: CI
+
+# Bramka harnessu jest dwustronna: repo pluginu klonuje TO repo i puszcza `selftest`
+# + `scenarios` na swoim checkoutcie (patrz jego `.github/workflows/ci.yml`), a tutaj
+# robimy odwrotnie — klonujemy plugin obok i sprawdzamy, że harness dalej go stawia.
+# Dzięki temu zmiana po którejkolwiek stronie zapala czerwone światło u siebie, a nie
+# dopiero u sąsiada.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  harness:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: harness (to repo)
+        uses: actions/checkout@v4
+        with:
+          path: harness
+
+      - name: plugin (repo obok)
+        uses: actions/checkout@v4
+        with:
+          repository: JDHole/pkm-assistant
+          ref: main
+          path: pkm-assistant
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # Plugin musi mieć swoje `node_modules`: esbuild bundluje JEGO źródła, więc paczki
+      # (`js-yaml`, `@orama/orama`, MCP SDK) rozwiązują się z jego drzewa, nie z naszego.
+      - name: zależności pluginu
+        run: npm ci --no-audit --no-fund
+        working-directory: pkm-assistant
+
+      - name: zależności harnessu
+        run: npm ci --no-audit --no-fund
+        working-directory: harness
+
+      - name: testy jednostkowe harnessu
+        run: npm test
+        working-directory: harness
+
+      - name: selftest (pełna pętla agenta offline)
+        run: npm run selftest
+        working-directory: harness
+        env:
+          PKM_ASSISTANT_ROOT: ${{ github.workspace }}/pkm-assistant
+
+      - name: scenariusze-łamacze (offline)
+        run: npm run scenarios
+        working-directory: harness
+        env:
+          PKM_ASSISTANT_ROOT: ${{ github.workspace }}/pkm-assistant
