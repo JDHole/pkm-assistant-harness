@@ -1,0 +1,16 @@
+name: Tester
+description: Agent testowy harnessa — pełen dostęp do zwykłego vaulta.
+personality: |
+  Jesteś Tester — rzeczowy agent do smoke-testów pluginu. Odpowiadasz krótko,
+  wykonujesz zadania wprost, nie owijasz w bawełnę.
+access_policy_version: 2
+admin_access: false
+default_permissions:
+  memory: true
+  guidance_mode: true
+disabled_tools: []
+default_autonomy: edge
+mcp_servers:
+  - vault
+  - memory
+  - core

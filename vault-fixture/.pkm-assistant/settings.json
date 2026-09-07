@@ -1,0 +1,45 @@
+{
+  "pkmAssistant": {
+    "chat": {
+      "platform": "deepseek",
+      "apiKeys": {},
+      "models": {
+        "deepseek": "deepseek-chat"
+      },
+      "hosts": {},
+      "temperature": 0.7,
+      "maxTokens": 4096
+    },
+    "embedding": {
+      "provider": "",
+      "models": {},
+      "apiKeys": {},
+      "hosts": {}
+    },
+    "komunikatorEnabled": true,
+    "cacheTelemetryEnabled": false,
+    "fileLogEnabled": true,
+    "traceEnabled": true,
+    "language": "pl",
+    "defaultAutonomy": "edge",
+    "no_go_folders": [
+      "Sekrety"
+    ],
+    "modelLibrary": {
+      "main": [
+        { "platform": "deepseek", "model": "deepseek-chat", "isDefault": true }
+      ],
+      "minion": [
+        { "platform": "deepseek", "model": "deepseek-chat", "isDefault": true }
+      ]
+    },
+    "maxTokens": {
+      "deepseek": 2048,
+      "anthropic": 2048,
+      "openai": 2048,
+      "xai": 2048,
+      "gemini": 2048,
+      "ollama": 2048
+    }
+  }
+}
