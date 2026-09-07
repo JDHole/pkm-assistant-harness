@@ -1,5 +1,5 @@
 /**
- * envLocal.js — ręczny parser `harness/.env.local` (FAZA B, mostek klucza).
+ * envLocal.js — ręczny parser `.env.local` (FAZA B, mostek klucza).
  *
  * Bez `dotenv` (zero nowych zależności). Format `KEY=VALUE` na linię:
  *   - puste linie i `# komentarze` pomijane,

@@ -1,4 +1,10 @@
 node_modules
 dist
+
+# Klucz do biegów żywych (`scenarios:live`, bieg eksploracyjny bez --offline).
+# NIGDY nie commitować. Szablon: .env.example
 .env.local
 .env
+
+.DS_Store
+.vscode

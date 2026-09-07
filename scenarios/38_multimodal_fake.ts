@@ -21,8 +21,8 @@
 import fs from 'fs';
 import path from 'path';
 import { textTurn, toolCallTurn } from '../mock/fake-llm-server.js';
-import { setHarnessRequestUrlRoutes } from '../mock/obsidian.js';
-import { transcribeAudio } from '../../modules/multimodal/index.js';
+import { setHarnessRequestUrlRoutes } from '@plugin/test-support/obsidian.js';
+import { transcribeAudio } from '@plugin/modules/multimodal/index.js';
 import { assert, assertFinalText, assertToolOk, listVaultFiles, readVaultFile } from './_asserts.js';
 
 import type { FixturePayload, Scenario } from './_asserts.js';

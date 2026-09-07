@@ -17,7 +17,7 @@
  * podklasą adaptera. Podsłuch (`tapModel`) wpina się w `ChatModel.stream` przez OPAKOWANIE
  * MODELU, po jego utworzeniu (patrz `runTurn.ts`).
  */
-import { CHAT_PROVIDERS } from '../../modules/models/index.js';
+import { CHAT_PROVIDERS } from '@plugin/modules/models/index.js';
 import type {
     ChatProvider,
     ChatProviderInfo,
@@ -25,7 +25,7 @@ import type {
     OpenAiCompletion,
     ProviderId,
     StreamHandlers,
-} from '../../modules/models/index.js';
+} from '@plugin/modules/models/index.js';
 
 let _endpoint: string | null = null;
 let _lmStudioEndpoint: string | null = null;

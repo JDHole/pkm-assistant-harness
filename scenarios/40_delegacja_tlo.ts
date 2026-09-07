@@ -19,7 +19,7 @@
  *   6. pętla główna domyka się naturalnie.
  */
 import { textTurn, toolCallTurn, lastToolResults } from '../mock/fake-llm-server.js';
-import { PKM_SUB_NAME } from '../../modules/sub-agents/index.js';
+import { PKM_SUB_NAME } from '@plugin/modules/sub-agents/index.js';
 import { awaitBackgroundSubTasks } from '../lib/runTurn.js';
 import { assert, assertFinalText, loopEnd, subTraceEvents, toolPosts, toolResult } from './_asserts.js';
 

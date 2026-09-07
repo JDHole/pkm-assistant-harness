@@ -12,11 +12,11 @@
  *
  * Kolejność importów: dom-shim (instaluje globale) PRZED bundlem pluginu.
  */
-import './mock/dom-shim.js';
+import '@plugin/test-support/dom-shim.js';
 import fs from 'fs';
 import fsp from 'fs/promises';
 import path from 'path';
-import { shutdownHarnessRuntime } from './mock/obsidian.js';
+import { shutdownHarnessRuntime } from '@plugin/test-support/obsidian.js';
 import { startFakeLlmServer, defaultSelftestScript } from './mock/fake-llm-server.js';
 import { setHarnessLlmEndpoint } from './lib/harnessProviders.js';
 import { parseEnvLocal } from './lib/envLocal.js';
@@ -206,8 +206,8 @@ async function runExploration(): Promise<void> {
     if (!key) {
       // DoD-B2: brak klucza → czytelny komunikat + exit 2 (odróżnialny od crashu).
       process.stderr.write(
-        '\n[harness] Brak harness/.env.local z DEEPSEEK_API_KEY — bieg żywy niedostępny.\n'
-        + '          Skopiuj harness/.env.example → harness/.env.local i wklej klucz DeepSeek,\n'
+        '\n[harness] Brak .env.local z DEEPSEEK_API_KEY — bieg żywy niedostępny.\n'
+        + '          Skopiuj .env.example → .env.local i wklej klucz DeepSeek,\n'
         + '          albo uruchom z flagą --offline (fake-serwer, bez klucza i bez sieci).\n\n');
       await cleanup(plugin, tempRoot, flags);
       await hardExit(2);
@@ -253,7 +253,7 @@ async function runExploration(): Promise<void> {
     if (fakeServer) line(`[harness] fake-serwer obsłużył ${fakeServer.getRequestCount()} zapytań`);
   }
 
-  // Kod wyjścia = werdykt DoD FAZY B (jak FAZA A na :172 i runner scenariuszy). `harness:selftest`
+  // Kod wyjścia = werdykt DoD FAZY B (jak FAZA A na :172 i runner scenariuszy). `selftest`
   // jest bramką przed merge — bramka, która nie potrafi zwrócić czerwieni, nie jest bramką.
   const exitCode = dodToExitCode(buildDod(reportCtx));
 

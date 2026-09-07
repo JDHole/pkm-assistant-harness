@@ -30,11 +30,11 @@ import {
   ConsolidationRun,
   buildConsolidationPlan,
   STEP_STATUS,
-} from '../../modules/memory/index.js';
-import { createModelForRole } from '../../modules/models/index.js';
+} from '@plugin/modules/memory/index.js';
+import { createModelForRole } from '@plugin/modules/models/index.js';
 import { assert, assertFinalText, listVaultFiles, readVaultFile } from './_asserts.js';
 
-import type { StreamChatModelLike } from '../../modules/memory/index.js';
+import type { StreamChatModelLike } from '@plugin/modules/memory/index.js';
 import type { FixturePayload, Scenario } from './_asserts.js';
 
 const AGENT = 'Tester';
@@ -202,7 +202,7 @@ export default ({
     const run = new ConsolidationRun({ steps, agentName: AGENT });
     const workflow = new ArchiveWorkflow(memory, {
       settings: plugin.env?.settings,
-      // Ten sam gest co `harness/lib/runTurn.ts`: to JEST obiekt, którym mieli czat, ale
+      // Ten sam gest co `lib/runTurn.ts`: to JEST obiekt, którym mieli czat, ale
       // `ChatModel` deklaruje WĘŻSZY typ treści wiadomości niż strukturalny kontrakt
       // `StreamChatModelLike` w memory — statycznie nie da się ich pogodzić, runtime jest ten sam.
       model: model as unknown as StreamChatModelLike,

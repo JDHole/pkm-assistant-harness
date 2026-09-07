@@ -2,13 +2,13 @@
  * Strażnik kontraktu katalogu scenariuszy w trybie LIVE
  * (audyt nocny 2026-09-02, moduł 14 — scenariusze LIVE na DeepSeeku).
  *
- * DLACZEGO PO ŹRÓDLE, A NIE BEHAWIORALNIE: `harness/scenarios/*.ts` importują
- * cały bootstrap pluginu (a przez niego `obsidian`), więc w AVA nie da się ich
- * zaimportować. Ten sam wzór i ten sam powód, co `core/PKMEnv.boot_timing.test.ts`
- * — test czyta źródła katalogu zamiast wołać runner. Poza tym `harness/scenarios/`
- * NIE jest objęty `ava.files` (zasięg to `harness/lib/*.test.ts`), więc test
- * położony obok runnera nie zostałby nawet zebrany przez `npm test`; ten leży
- * w `core/`, czyli pod bramką.
+ * DLACZEGO PO ŹRÓDLE, A NIE BEHAWIORALNIE: `scenarios/NN_*.ts` importują cały bootstrap
+ * pluginu (a przez niego `obsidian`), więc w AVA nie da się ich zaimportować — atrapa wchodzi
+ * dopiero aliasem esbuilda, w bundlu. Ten test czyta więc ŹRÓDŁA katalogu zamiast wołać runner.
+ *
+ * Do 2026-09-07 leżał w repo pluginu (`core/harness_scenariusze_live_kontrakt.test.ts`), bo tylko
+ * tam był pod bramką `npm test`; po wyprowadzce harnessu do własnego repo mieszka obok tego,
+ * czego pilnuje — `ava.files` tego repo bierze `scenarios/*.test.ts`.
  *
  * CO PILNUJE. Runner ma dwa tryby: offline (fake-serwer odgrywa `offlineScript`)
  * i live (`--live`, prawdziwy DeepSeek). Asercje w obu trybach są DOKŁADNIE TE
@@ -54,12 +54,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import url from 'node:url';
 
-const SCENARIOS_DIR = path.join(
-  path.dirname(url.fileURLToPath(import.meta.url)),
-  '..',
-  'harness',
-  'scenarios',
-);
+/** Ten plik leży W katalogu scenariuszy — pilnuje swoich sąsiadów. */
+const SCENARIOS_DIR = path.dirname(url.fileURLToPath(import.meta.url));
 
 /** Pliki katalogu scenariuszy: `NN_nazwa.ts`. Pomocnicze (`_runner`, `_asserts`, `index`) odpadają. */
 function scenarioFiles(): string[] {

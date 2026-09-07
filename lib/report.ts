@@ -144,7 +144,7 @@ const bar = '══════════════════════�
 const TRACE_UNAVAILABLE = 'trace niedostępny - nie ma z czego czytać przebiegu';
 
 /**
- * AUD-testy-029: bramka `harness:selftest` nie patrzyła na WYNIK narzędzi — tylko na to, że
+ * AUD-testy-029: bramka `selftest` nie patrzyła na WYNIK narzędzi — tylko na to, że
  * pętla w ogóle wystartowała/skończyła. `read` zwracające `{success:false}` (zepsute narzędzie,
  * NIE odmowa uprawnień — to zwykły `catch` w środku tool.execute) zostawiał `tool.post` w trace
  * jako `status=ok`, bo `AgentLoop.ts` liczy `status: r.error ? 'error' : 'ok'` WYŁĄCZNIE po tym,
@@ -158,7 +158,7 @@ const TRACE_UNAVAILABLE = 'trace niedostępny - nie ma z czego czytać przebiegu
  * ląduje w `toolCallDetails[].resultPreview` (pierwsze 500 znaków zserializowanego wyniku, pole
  * `isError` leży blisko początku obiektu — mieści się w oknie). Kluczujemy na DOKŁADNYM tokenie
  * JSON (`"isError":true`), nie na słowach z treści — inaczej powtórzylibyśmy pułapkę
- * `assertToolErrored` z `harness/scenarios/_asserts.ts` (AUD-testy-028: udany odczyt notatki,
+ * `assertToolErrored` z `scenarios/_asserts.ts` (AUD-testy-028: udany odczyt notatki,
  * której treść PRZYPADKIEM zawiera słowo z listy, przechodzi za odmowę).
  */
 const TOOL_ERROR_MARKER = '"isError":true';

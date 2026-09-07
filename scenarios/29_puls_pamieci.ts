@@ -32,10 +32,10 @@ import {
   memoryOpsCenter,
   OPS_EVENT,
   STEP_STATUS,
-} from '../../modules/memory/index.js';
+} from '@plugin/modules/memory/index.js';
 import { assert, assertFinalText, listVaultFiles } from './_asserts.js';
 
-import type { StreamChatModelLike } from '../../modules/memory/index.js';
+import type { StreamChatModelLike } from '@plugin/modules/memory/index.js';
 import type { FixturePayload, Scenario } from './_asserts.js';
 
 const AGENT = 'Tester';

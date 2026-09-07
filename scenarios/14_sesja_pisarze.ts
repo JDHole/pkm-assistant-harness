@@ -31,7 +31,7 @@
  *   (j) DRUGI autozapis (już po restarcie) nie skraca pliku — append-only.
  */
 import { toolCallTurn, textTurn } from '../mock/fake-llm-server.js';
-import { AgentMemory } from '../../modules/memory/index.js';
+import { AgentMemory } from '@plugin/modules/memory/index.js';
 import {
   assert,
   assertToolPost,

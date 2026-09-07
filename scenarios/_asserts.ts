@@ -238,7 +238,7 @@ export const NO_ATTEMPT_MESSAGE =
  * `core/utils/toolResultStatus.ts` — patrz `modules/tools/MCPClient.ts`). Ten znacznik pokrywa
  * WSZYSTKIE drogi porażki: `{success:false}` narzędzi wbudowanych, `{isError:true}` własne
  * artefaktów/external MCP, i denial/permission `throw` złapany we WŁASNYM catchu klienta
- * (`MCPClient` w praktyce nigdy nie oddaje wyjątku dalej — patrz `harness/README.md`, sekcja
+ * (`MCPClient` w praktyce nigdy nie oddaje wyjątku dalej — patrz `README.md`, sekcja
  * „Trace"). Token ląduje w `resultPreview` (pierwsze 500 znaków wyniku), a pole `isError` leży
  * blisko początku serializowanego obiektu — mieści się w oknie podglądu.
  *

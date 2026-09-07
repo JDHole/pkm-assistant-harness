@@ -1,14 +1,14 @@
 /**
  * assertToolErrored.test.ts — strażnik AUD-testy-028: `assertToolErrored`/`assertToolOk`
- * (`harness/scenarios/_asserts.ts`) muszą kluczować na TWARDYM sygnale (`isError:true`
+ * (`scenarios/_asserts.ts`) muszą kluczować na TWARDYM sygnale (`isError:true`
  * w resultPreview), nie na SŁOWACH z treści wyniku.
  *
- * Ten plik testuje kod z `harness/scenarios/_asserts.ts`, a mieszka w `harness/lib/` z powodów
- * HISTORYCZNYCH: do 2026-09-03 `ava.files` brało wyłącznie `harness/lib/*.test.ts`. Od werdyktu
- * „harness pod testy" (2026-09-03) `npm test` zbiera `harness/**\/*.test.ts`, więc nowe testy
- * kładziemy obok testowanego kodu (np. `harness/scenarios/noAttempt.test.ts`). Ten zostaje tu,
+ * Ten plik testuje kod z `scenarios/_asserts.ts`, a mieszka w `lib/` z powodów
+ * HISTORYCZNYCH: do 2026-09-03 `ava.files` brało wyłącznie `lib/*.test.ts`. Od werdyktu
+ * „harness pod testy" (2026-09-03) `npm test` tego repo zbiera `lib/*.test.ts` i `scenarios/*.test.ts`, więc nowe testy
+ * kładziemy obok testowanego kodu (np. `scenarios/noAttempt.test.ts`). Ten zostaje tu,
  * żeby nie przepisywać historii bez potrzeby. Same scenariusze `NN_*.ts` dalej biegną WYŁĄCZNIE
- * przez `npm run harness:scenarios`, poza `npm test` — patrz `harness/README.md`.
+ * przez `npm run scenarios`, poza `npm test` — patrz `README.md`.
  *
  * Dziura, którą ten plik pina: przed naprawą `ERROR_SIGNALS` dopuszczał alternatywy typu
  * `no-?go`/`workspace`/`outside`/`denied` gdziekolwiek w TREŚCI wyniku — więc UDANY odczyt

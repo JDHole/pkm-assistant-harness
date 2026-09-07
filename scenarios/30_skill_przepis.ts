@@ -26,7 +26,7 @@
  * domknęła się naturalnie, (5) pre-questions podstawiają się bez resztek `{{`.
  */
 import { toolCallTurn, textTurn } from '../mock/fake-llm-server.js';
-import { substituteVariables } from '../../modules/skills/index.js';
+import { substituteVariables } from '@plugin/modules/skills/index.js';
 import {
   assert, assertFinalText, assertToolPost, listVaultFiles, loopEnd, readVaultFile, toolPosts,
 } from './_asserts.js';

@@ -1,33 +1,42 @@
 /**
- * `harness/esbuild.harness.ts` — build bundla node'owego harnessu („Szklane Pudło").
+ * `esbuild.harness.ts` — build bundla node'owego harnessu („Szklane Pudło").
  *
- * Uruchamiany wprost (`node harness/esbuild.harness.ts`) pierwszym krokiem KAŻDEJ
- * komendy `harness:*`, więc każdy bieg testów integracyjnych jest przy okazji świeżym
- * load-testem bundla — to on łapie cykle importów w barrelach, których żaden test
- * jednostkowy nie widzi.
+ * Uruchamiany wprost (`node esbuild.harness.ts`) pierwszym krokiem KAŻDEJ komendy tego repo,
+ * więc każdy bieg testów integracyjnych jest przy okazji świeżym load-testem bundla pluginu —
+ * to on łapie cykle importów w barrelach, których żaden test jednostkowy nie widzi.
  *
  * Dwa wejścia, jeden katalog wyjściowy:
- *   `harness/run.ts`              → `harness/dist/run.js`        (dry-boot i bieg eksploracyjny)
- *   `harness/scenarios/_runner.ts` → `harness/dist/scenarios.js`  (scenariusze-łamacze)
+ *   `run.ts`               → `dist/run.js`        (dry-boot i bieg eksploracyjny)
+ *   `scenarios/_runner.ts` → `dist/scenarios.js`  (scenariusze-łamacze)
  *
- * Sedno: alias `obsidian` → `harness/mock/obsidian.ts`. Bundlujemy DOKŁADNIE ten kod
- * wtyczki, który dostaje użytkownik; podstawiamy tylko moduł, którego poza Obsidianem
- * fizycznie nie ma.
+ * SEDNO — dwa aliasy, obydwa liczone od korzenia repo PLUGINU (`lib/pluginRoot.ts`):
+ *   `@plugin/<cokolwiek>` → `<plugin>/<cokolwiek>`             (kod wtyczki, przez barrele)
+ *   `obsidian`            → `<plugin>/test-support/obsidian.ts` (atrapa hosta)
+ * Bundlujemy DOKŁADNIE ten kod wtyczki, który dostaje użytkownik; podstawiamy tylko moduł,
+ * którego poza Obsidianem fizycznie nie ma. Atrapa została w repo pluginu, bo bez niej nie
+ * wstaje jego własne `npm test` — jedna atrapa, dwóch konsumentów.
  *
- * ⚠️ Ten plik ma WŁASNE, krótkie pluginy tekstowe i świadomie nie importuje niczego
- * z `utils/`: leży w `tsconfig.include`, więc obowiązuje go kontrakt specyfierów `.js`,
- * a Node uruchamiający go wprost nie przepisuje rozszerzeń na pliki `.ts`. Bliźniacze
- * (ale nie wspólne) pluginy siedzą w `esbuild.js` — duplikacja jest tańsza niż wyjątek
- * w kontrakcie importów całego repo.
+ * KONTRAKT SPECYFIERÓW (TS-0 pluginu): w kodzie importy kończą się na `.js`, a na dysku leżą
+ * pliki `.ts`. Dla importów WEWNĄTRZ drzewa pluginu robi to esbuild sam (importer jest `.ts`),
+ * ale ścieżki wchodzące przez alias omijają jego resolver — dlatego podmianę rozszerzenia
+ * robimy tu, ręcznie, w `rozwiazWPluginie`.
+ *
+ * ⚠️ Ten plik ma WŁASNE, krótkie pluginy tekstowe (`.css`/`.md` jako moduł) — bliźniacze
+ * siedzą w `esbuild.js` pluginu. Duplikacja jest tańsza niż wspólna zależność między repo.
  */
+import fs from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
 import { readFile, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import esbuild from 'esbuild';
 import type { Plugin } from 'esbuild';
+import { pluginRoot } from './lib/pluginRoot.ts';
 
 const HARNESS_DIR = path.dirname(fileURLToPath(import.meta.url));
+
+/** Prefiks aliasu kodu wtyczki. Jedno miejsce — używa go i resolver, i komunikat błędu. */
+const PREFIKS = '@plugin/';
 
 /** Sposób, w jaki treść pliku tekstowego zamienia się w moduł JS. */
 interface TextImportSpec {
@@ -79,7 +88,42 @@ const markdownImportPlugin = textImportPlugin({
     toModule: markdown => `export default ${JSON.stringify(markdown)};\n`,
 });
 
+/**
+ * Ścieżka względna w drzewie pluginu → plik na dysku, z podmianą `.js` → `.ts` (kontrakt TS-0).
+ * Rzuca z pełną listą sprawdzonych ścieżek — pomyłka w aliasie ma być czytelna od razu.
+ */
+function rozwiazWPluginie(korzen: string, wzgledna: string): string {
+    const abs = path.join(korzen, wzgledna);
+    const kandydaci = abs.endsWith('.js')
+        ? [abs.slice(0, -3) + '.ts', abs]
+        : [abs, abs + '.ts', path.join(abs, 'index.ts')];
+    for (const kandydat of kandydaci) {
+        if (fs.existsSync(kandydat) && fs.statSync(kandydat).isFile()) return kandydat;
+    }
+    throw new Error(
+        `[harness/build] Alias ${PREFIKS}${wzgledna} nie wskazuje na żaden plik.\n`
+        + '                Sprawdzone:\n' + kandydaci.map(k => '                  - ' + k).join('\n'),
+    );
+}
+
+/** Dwa aliasy do drzewa pluginu (patrz nagłówek). */
+function pluginTreePlugin(korzen: string): Plugin {
+    const atrapaObsidiana = path.join(korzen, 'test-support', 'obsidian.ts');
+    return {
+        name: 'plugin-tree',
+        setup(build) {
+            build.onResolve({ filter: /^@plugin\// }, args => ({
+                path: rozwiazWPluginie(korzen, args.path.slice(PREFIKS.length)),
+            }));
+            build.onResolve({ filter: /^obsidian$/ }, () => ({ path: atrapaObsidiana }));
+        },
+    };
+}
+
 async function buildHarness(): Promise<void> {
+    const korzenPluginu = pluginRoot();
+    process.stdout.write(`[harness/build] plugin: ${korzenPluginu}\n`);
+
     await esbuild.build({
         entryPoints: {
             run: path.join(HARNESS_DIR, 'run.ts'),
@@ -97,11 +141,9 @@ async function buildHarness(): Promise<void> {
         keepNames: true,
         sourcemap: false,
         logLevel: 'warning',
-        // Wyjście jest ESM (repo ma `"type": "module"`, a bundle nazywa się `.js`), więc
-        // trzy globale CommonJS trzeba dołożyć ręcznie: `require` dla paczek z
-        // nieanalizowalnym `require(...)`, oraz `__filename`/`__dirname`, po których
-        // sięga kod harnessu (`harness/lib/boot.ts` liczy z nich korzeń harnessu —
-        // bundle leży w `harness/dist/`, więc `..` trafia dokładnie w `harness/`).
+        // Wyjście jest ESM (repo ma `"type": "module"`, a bundle nazywa się `.js`), więc trzy
+        // globale CommonJS trzeba dołożyć ręcznie: `require` dla paczek z nieanalizowalnym
+        // `require(...)`, oraz `__filename`/`__dirname`, po których sięga kod harnessu.
         // Nazwy importów pomocniczych są celowo dziwaczne: banner jest dla esbuilda
         // nieprzezroczystym tekstem, więc nie może kolidować z symbolami bundla.
         banner: {
@@ -114,15 +156,11 @@ async function buildHarness(): Promise<void> {
                 'const __dirname = __harnessDirname(__filename);',
             ].join('\n'),
         },
-        alias: {
-            obsidian: path.join(HARNESS_DIR, 'mock', 'obsidian.ts'),
-        },
-        plugins: [cssImportPlugin, markdownImportPlugin],
+        plugins: [pluginTreePlugin(korzenPluginu), cssImportPlugin, markdownImportPlugin],
     });
-    // Znacznik modułu obok bundli: wyjście jest ESM, więc `harness/dist/package.json` MUSI mówić
-    // `"type": "module"`. Poprzedni harness (sprzed clean-room) zostawiał tu `"commonjs"`,
-    // a katalog jest gitignorowany — stary klon dziedziczył znacznik i Node czytał nowy bundle
-    // jako CJS („Cannot use import statement outside a module"). Zapis jest idempotentny.
+    // Znacznik modułu obok bundli: wyjście jest ESM, więc `dist/package.json` MUSI mówić
+    // `"type": "module"`. Katalog jest gitignorowany, więc stary klon mógłby odziedziczyć
+    // znacznik `"commonjs"` i Node czytałby nowy bundle jako CJS. Zapis jest idempotentny.
     await writeFile(path.join(HARNESS_DIR, 'dist', 'package.json'), '{\n  "type": "module"\n}\n', 'utf8');
 }
 

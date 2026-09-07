@@ -5,8 +5,8 @@
  * Testuje czystą funkcję z `_asserts.ts` — sam runner (`_runner.ts`) odpala `main()` przy
  * imporcie, więc jego nie da się zaimportować w AVA; kontrakt guarda żyje w funkcji.
  *
- * Plik mieszka w `harness/scenarios/` CELOWO: od 2026-09-03 `npm test` zbiera
- * `harness/**\/*.test.ts` (werdykt „harness pod testy"), a rejestr scenariuszy
+ * Plik mieszka w `scenarios/` CELOWO: od 2026-09-03 `npm test` zbiera
+ * `scenarios/*.test.ts` (obok `lib/*.test.ts`), a rejestr scenariuszy
  * (`scenarioRegistry.test.ts`) patrzy tylko na pliki `NN_*.ts`, więc test go nie myli.
  */
 import test from 'ava';

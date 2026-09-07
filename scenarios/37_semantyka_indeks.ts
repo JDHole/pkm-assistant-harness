@@ -26,8 +26,8 @@
  * Bieg jest offline-only: żywa semantyka wymaga prawdziwego providera embeddingów (Faza 2).
  */
 import { textTurn, toolCallTurn } from '../mock/fake-llm-server.js';
-import { VaultIndexer, countDocs, searchVectorTopK, createEmbedderFacade } from '../../modules/embedding/index.js';
-import { EmbeddingHelper } from '../../modules/memory/index.js';
+import { VaultIndexer, countDocs, searchVectorTopK, createEmbedderFacade } from '@plugin/modules/embedding/index.js';
+import { EmbeddingHelper } from '@plugin/modules/memory/index.js';
 import { assert, assertFinalText, assertToolOk } from './_asserts.js';
 
 import type { FixturePayload, Scenario } from './_asserts.js';
@@ -262,7 +262,7 @@ export default ({
     );
 
     // ── 4. scope=memory: keyword TAK, semantyka NIGDY (zachowanie kontraktowe) ──
-    // Drugie wywołanie idzie produkcyjnym egzekutorem (wzór `harness/lib/runTurn.ts`), więc
+    // Drugie wywołanie idzie produkcyjnym egzekutorem (wzór `lib/runTurn.ts`), więc
     // przechodzi przez ten sam łańcuch uprawnień co wywołanie z pętli — tylko bez modelu.
     const pamiec = await plugin.mcpClient.executeToolCall(
       { id: 'harness-37-memory', name: 'search', arguments: { query: FRAZA_PAMIECI, scope: 'memory', limit: 5 } },

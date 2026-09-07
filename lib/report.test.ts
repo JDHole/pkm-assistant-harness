@@ -190,7 +190,7 @@ test('buildDod: słowo "error" W TREŚCI notatki nie myli się z realnym isError
 // jeden token ("Po", "OK", "Gotowe.") wystarczał za zielony DoD, bez śladu, że model w ogóle
 // zajął się zleconą robotą. Bramka teraz wymaga DŁUGOŚCI (>= MIN_FINAL_TEXT_LENGTH, patrz
 // `report.ts`) ALBO choć jednej próby narzędzia — reużywając TEGO SAMEGO sygnału strukturalnego
-// co `isNoAttemptRun` z `harness/scenarios/_asserts.ts` (nie duplikat: import wprost).
+// co `isNoAttemptRun` z `scenarios/_asserts.ts` (nie duplikat: import wprost).
 
 const FINAL_TEXT_DOD_KEY = 'finalText niepusty';
 

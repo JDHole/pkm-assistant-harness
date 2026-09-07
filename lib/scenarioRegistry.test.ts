@@ -1,24 +1,24 @@
 /**
- * scenarioRegistry.test.ts — AUD-testy-062: rejestr `SCENARIOS` (`harness/scenarios/index.ts`)
+ * scenarioRegistry.test.ts — AUD-testy-062: rejestr `SCENARIOS` (`scenarios/index.ts`)
  * vs pliki scenariuszy NA DYSKU.
  *
  * `_runner.ts` iteruje po `SCENARIOS` (import statyczny, nie glob po katalogu — komentarz w
- * `index.ts`: "Statyczne importy (NIE glob)"). Plik `harness/scenarios/NN_x.ts` bez importu +
- * wpisu w tablicy `SCENARIOS` **nigdy nie biegnie** — `npm run harness:scenarios` mimo to
+ * `index.ts`: "Statyczne importy (NIE glob)"). Plik `scenarios/NN_x.ts` bez importu +
+ * wpisu w tablicy `SCENARIOS` **nigdy nie biegnie** — `npm run scenarios` mimo to
  * kończy się `N/N GREEN`, exit 0, bez ani jednej wzmianki o pominiętym pliku (N liczone z
  * REJESTRU, nie z dysku). Regresja, którą taki nowy scenariusz miał złapać, przechodzi więc
  * przez WSZYSTKIE bramki repo niezauważona.
  *
- * ⚠️ Ten plik testuje `harness/scenarios/index.ts`, ale mieszka w `harness/lib/` — z tego
+ * ⚠️ Ten plik testuje `scenarios/index.ts`, ale mieszka w `lib/` — z tego
  * samego powodu co `assertToolErrored.test.ts` obok: `package.json`'s `ava.files` bierze
- * WYŁĄCZNIE `harness/lib/*.test.{js,ts}` (nie `harness/scenarios/**`). Dzięki temu ta asercja
- * biegnie na KAŻDYM `npm test` — nie tylko wtedy, gdy ktoś akurat puści `harness:scenarios`.
+ * WYŁĄCZNIE `lib/*.test.{js,ts}` (nie `scenarios/**`). Dzięki temu ta asercja
+ * biegnie na KAŻDYM `npm test` — nie tylko wtedy, gdy ktoś akurat puści `scenarios`.
  *
  * ⚠️ Świadomie NIE importuje `{ SCENARIOS }` z `../scenarios/index.js`: ten barrel importuje
  * WSZYSTKIE 34 scenariusze, a część z nich (np. `36_web_provenance.ts`) ciągnie transitywnie
  * moduły dotykające `obsidian` (`modules/web/WebSearchProvider.ts`) — pod gołym AVA/tsx, BEZ
- * aliasu esbuilda `obsidian → harness/mock/obsidian.ts` (ten alias istnieje TYLKO w bundlu
- * `harness/dist/*.js`), taki import wywraca się natychmiast (`Cannot find package 'obsidian'`,
+ * aliasu esbuilda `obsidian → @plugin/test-support/obsidian.ts` (ten alias istnieje TYLKO w bundlu
+ * `dist/*.js`), taki import wywraca się natychmiast (`Cannot find package 'obsidian'`,
  * zweryfikowane empirycznie). Więc — jak `core/PKMEnv.boot_timing.test.ts` (patrz `core/CLAUDE.md`,
  * ten sam wzór dla plików importujących `obsidian`) — czytamy ŹRÓDŁO `index.ts` jako TEKST
  * i parsujemy je regexami, zamiast wykonywać moduł.
@@ -74,7 +74,7 @@ test('index.ts vs dysk: KAŻDY plik scenariusza [0-9]*.ts ma odpowiadający impo
     const importedFiles = new Set(parseImports(src).map((i) => i.file));
     const onDisk = scenarioFilesOnDisk();
     const orphaned = onDisk.filter((f) => !importedFiles.has(f));
-    t.deepEqual(orphaned, [], `Plik(i) scenariusza BEZ importu w harness/scenarios/index.ts (nigdy nie biegną): ${orphaned.join(', ') || '(brak)'}`);
+    t.deepEqual(orphaned, [], `Plik(i) scenariusza BEZ importu w scenarios/index.ts (nigdy nie biegną): ${orphaned.join(', ') || '(brak)'}`);
 });
 
 test('index.ts: KAŻDY import wskazuje plik, który realnie istnieje na dysku (martwy/przestarzały import)', t => {

@@ -13,13 +13,13 @@
  *
  * Kolejność globali: dom-shim PRZED bundlem pluginu (boot.js importuje PKMAssistantPlugin).
  */
-import '../mock/dom-shim.js';
+import '@plugin/test-support/dom-shim.js';
 import fs from 'fs';
 import path from 'path';
 import { bootPlugin, cleanupPlugin, ENV_LOCAL_PATH, TRACE_REL } from '../lib/boot.js';
 import { startFakeLlmServer } from '../mock/fake-llm-server.js';
 import { setHarnessLlmEndpoint } from '../lib/harnessProviders.js';
-import { clearHarnessRequestUrlRoutes } from '../mock/obsidian.js';
+import { clearHarnessRequestUrlRoutes } from '@plugin/test-support/obsidian.js';
 import { clearHarnessCompletions, setHarnessLmStudioEndpoint, setHarnessOllamaHost } from '../lib/harnessProviders.js';
 import { parseEnvLocal } from '../lib/envLocal.js';
 import { runExploratoryTurn } from '../lib/runTurn.js';
@@ -133,8 +133,8 @@ async function runOne(scenario: Scenario): Promise<RunnerPayload> {
     apiKey = env.DEEPSEEK_API_KEY || null;
     if (!apiKey) {
       process.stderr.write(
-        '\n[harness] --live wymaga harness/.env.local z DEEPSEEK_API_KEY.\n'
-        + '          Skopiuj harness/.env.example → harness/.env.local i wklej klucz DeepSeek,\n'
+        '\n[harness] --live wymaga .env.local z DEEPSEEK_API_KEY.\n'
+        + '          Skopiuj .env.example → .env.local i wklej klucz DeepSeek,\n'
         + '          albo uruchom scenariusze bez --live (offline, deterministycznie).\n\n');
       await hardExit(2);
     }
@@ -351,6 +351,6 @@ async function main(): Promise<void> {
 
 main().catch(async (err: RunnerPayload) => {
   process.stderr.write(`\n[harness/scenarios] BŁĄD krytyczny:\n${err?.stack || err}\n`);
-  try { const { shutdownHarnessRuntime } = await import('../mock/obsidian.js'); shutdownHarnessRuntime(); } catch { /* best-effort */ }
+  try { const { shutdownHarnessRuntime } = await import('@plugin/test-support/obsidian.js'); shutdownHarnessRuntime(); } catch { /* best-effort */ }
   await hardExit(1);
 });

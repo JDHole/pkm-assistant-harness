@@ -22,7 +22,7 @@ import {
   makeInlineTriggerMarker,
   parseInlineTriggers,
   stripInlineTriggers,
-} from '../../modules/chat/chat/InlineChipPlugin.js';
+} from '@plugin/modules/chat/chat/InlineChipPlugin.js';
 import { runExploratoryTurn } from '../lib/runTurn.js';
 import { assert, assertFinalText } from './_asserts.js';
 

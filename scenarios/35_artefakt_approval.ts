@@ -25,9 +25,9 @@
  * — to uczciwy sygnał „przepis niewykonalny dla modelu", nie awaria harnessa.
  */
 import { toolCallTurn, textTurn, lastToolResults } from '../mock/fake-llm-server.js';
-import { computeArtifactButtons } from '../../modules/artifacts/artifactButtons.js';
-import { buildSummonMessage } from '../../modules/artifacts/artifactSummon.js';
-import { t } from '../../core/i18n/index.js';
+import { computeArtifactButtons } from '@plugin/modules/artifacts/artifactButtons.js';
+import { buildSummonMessage } from '@plugin/modules/artifacts/artifactSummon.js';
+import { t } from '@plugin/core/i18n/index.js';
 import { assert, assertToolOk, listVaultFiles, readVaultFile, snapshot, toolResult } from './_asserts.js';
 
 import type { FixturePayload, Scenario } from './_asserts.js';

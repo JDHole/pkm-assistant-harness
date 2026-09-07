@@ -33,8 +33,8 @@ import {
   readVaultFile,
 } from './_asserts.js';
 
-import { defaultSettings } from '../../config/defaultSettings.js';
-import { DEFAULT_AUTONOMY } from '../../core/index.js';
+import { defaultSettings } from '@plugin/config/defaultSettings.js';
+import { DEFAULT_AUTONOMY } from '@plugin/core/index.js';
 
 import type { FixturePayload, Scenario } from './_asserts.js';
 

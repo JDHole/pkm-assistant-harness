@@ -16,14 +16,14 @@
  *
  * NIE kopiujemy treści promptu ani mechaniki pętli — wołamy produkcyjne funkcje.
  */
-import { runAgentLoop, ArrayMessageStore } from '../../modules/agent-loop/index.js';
-import { createModelForRole } from '../../modules/models/index.js';
+import { runAgentLoop, ArrayMessageStore } from '@plugin/modules/agent-loop/index.js';
+import { createModelForRole } from '@plugin/modules/models/index.js';
 import { tapModel } from './harnessProviders.js';
 import type { TappableModel } from './harnessProviders.js';
-import { getLimits } from '../../config/limits.js';
-import { normalizeAutonomy } from '../../core/index.js';
+import { getLimits } from '@plugin/config/limits.js';
+import { normalizeAutonomy } from '@plugin/core/index.js';
 
-import type { ParsedToolCall, RunAgentLoopOptions, RunAgentLoopResult } from '../../modules/agent-loop/index.js';
+import type { ParsedToolCall, RunAgentLoopOptions, RunAgentLoopResult } from '@plugin/modules/agent-loop/index.js';
 import type { HarnessRuntime } from './boot.js';
 
 type ToolDefinition = NonNullable<ReturnType<NonNullable<RunAgentLoopOptions['resolveTools']>>>[number];

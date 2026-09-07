@@ -12,10 +12,11 @@
 import fsp from 'fs/promises';
 import path from 'path';
 import os from 'os';
-import PKMAssistantPlugin from '../../src/main.js';
+import PKMAssistantPlugin from '@plugin/src/main.js';
 import { createMockApp } from '../mock/app.js';
-import { shutdownHarnessRuntime } from '../mock/obsidian.js';
+import { shutdownHarnessRuntime } from '@plugin/test-support/obsidian.js';
 import { harnessProviderOverrides } from './harnessProviders.js';
+import { harnessRoot, pluginRoot } from './pluginRoot.js';
 
 // TS-any: plugin, mock App and manifest meet at the harness composition boundary.
 export type HarnessRuntime = any;
@@ -44,9 +45,12 @@ export interface CleanupOptions {
   quiet?: boolean;
 }
 
-export const HARNESS_DIR = path.resolve(__dirname, '..');
+// Korzeń TEGO repo (fixture, .env.local) i korzeń repo PLUGINU (manifest) — dwa różne
+// katalogi od 2026-09-07, gdy harness wyprowadził się z repo pluginu. Rozstrzyga je
+// `lib/pluginRoot.ts`; tu tylko sklejamy ścieżki.
+export const HARNESS_DIR = harnessRoot();
 export const FIXTURE_DIR = path.join(HARNESS_DIR, 'vault-fixture');
-export const MANIFEST_PATH = path.join(HARNESS_DIR, '..', 'manifest.json');
+export const MANIFEST_PATH = path.join(pluginRoot(), 'manifest.json');
 export const ENV_LOCAL_PATH = path.join(HARNESS_DIR, '.env.local');
 export const TRACE_REL = path.join('.pkm-assistant', 'logs', 'trace.log');
 

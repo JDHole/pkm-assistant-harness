@@ -15,11 +15,11 @@
 import fs from 'fs';
 import fsp from 'fs/promises';
 import path from 'path';
-import { TFile, TFolder } from './obsidian.js';
-import { createMockEl } from './dom-shim.js';
+import { TFile, TFolder } from '@plugin/test-support/obsidian.js';
+import { createMockEl } from '@plugin/test-support/dom-shim.js';
 // Oba symbole wychodzą z barrela `core/index.js` (drzwi core) — atrapa nie ma powodu
 // wchodzić do bebechów `core/utils/`. Barrel jest node-safe, więc wstaje w harnessie tak samo.
-import { parseFrontmatter, stringifyYaml } from '../../core/index.js';
+import { parseFrontmatter, stringifyYaml } from '@plugin/core/index.js';
 
 // TS-any: the harness app intentionally emulates the open-ended Obsidian App/Vault runtime surface.
 type Runtime = any;

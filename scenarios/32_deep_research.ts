@@ -25,7 +25,7 @@
  * (5) treść niesie sekcje Ustalenia i Źródła z wikilinkiem do prawdziwej notatki fixture'u.
  */
 import { textTurn, toolCallTurn } from '../mock/fake-llm-server.js';
-import { t } from '../../core/i18n/index.js';
+import { t } from '@plugin/core/i18n/index.js';
 import { assert, assertFinalText, listVaultFiles, readVaultFile, subTraceEvents, toolPosts, toolResult } from './_asserts.js';
 
 import type { FixturePayload, Scenario } from './_asserts.js';
