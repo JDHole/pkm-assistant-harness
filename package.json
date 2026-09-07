@@ -1,0 +1,46 @@
+{
+  "name": "pkm-assistant-harness",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Szklane Pudlo - the real PKM Assistant plugin booted in Node, without Obsidian.",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "build": "node esbuild.harness.ts",
+    "harness": "node esbuild.harness.ts && node dist/run.js --dry-boot",
+    "selftest": "node esbuild.harness.ts && node dist/run.js --offline --agent Tester --prompt \"Przeczytaj Notatki/powitanie.md i streść w jednym zdaniu.\"",
+    "scenarios": "node esbuild.harness.ts && node dist/scenarios.js",
+    "scenarios:live": "node esbuild.harness.ts && node dist/scenarios.js --live",
+    "test": "npx ava --verbose",
+    "typecheck": "tsc --noEmit"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/JDHole/pkm-assistant-harness.git"
+  },
+  "author": "JDHole",
+  "license": "GPL-3.0-or-later",
+  "homepage": "https://github.com/JDHole/pkm-assistant-harness",
+  "devDependencies": {
+    "@types/node": "^22.20.1",
+    "ava": "^6.0.1",
+    "esbuild": "^0.25.9",
+    "tsx": "^4.23.1",
+    "typescript": "5.4.5"
+  },
+  "ava": {
+    "files": [
+      "lib/*.test.ts",
+      "scenarios/*.test.ts"
+    ],
+    "extensions": {
+      "ts": "module"
+    },
+    "nodeArguments": [
+      "--import=tsx"
+    ],
+    "workerThreads": false
+  }
+}

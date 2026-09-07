@@ -1,0 +1,40 @@
+{
+  // Kontrakt przeniesiony z repo pluginu (kampania TS-0): tsc robi TYLKO typecheck (noEmit),
+  // transpilacją zajmuje się esbuild (bundle harnessu) i tsx (testy AVA).
+  //
+  // ⚠️ `typecheck` NIE jest bramką CI — CI pluginu puszcza `selftest` i `scenarios`, a te idą
+  // przez esbuild, który rozwiązuje `@plugin/...` DYNAMICZNIE (`lib/pluginRoot.ts`: zmienna
+  // `PKM_ASSISTANT_ROOT` albo katalog-brat). `paths` niżej to statyczne przybliżenie tego
+  // samego dla tsc i podpowiedzi w edytorze: zakłada, że plugin leży OBOK tego repo. Gdy
+  // trzymasz go gdzie indziej, `npm run typecheck` będzie krzyczał o nierozwiązane `@plugin/*`
+  // — popraw wtedy `paths` lokalnie (albo po prostu zostaw, bo bramką jest bieg harnessu).
+  "compilerOptions": {
+    "strict": true,
+    // WYJĄTEK jak w pluginie: `strict` implikuje `alwaysStrict`, a esbuild czyta to pole
+    // i wstrzykiwałby "use strict" do domknięć bundla. Źródła są ESM, więc moduły i tak są
+    // strict z definicji.
+    "alwaysStrict": false,
+    "noEmit": true,
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "isolatedModules": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "esModuleInterop": true,
+    "useDefineForClassFields": true,
+    // `esbuild.harness.ts` uruchamia Node WPROST (`node esbuild.harness.ts`), a Node nie
+    // przepisuje rozszerzeń — jego jedyny lokalny import musi więc kończyć się na `.ts`.
+    // Reszta repo trzyma kontrakt `.js` (esbuild i tsx podstawiają rozszerzenie same).
+    "allowImportingTsExtensions": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "baseUrl": ".",
+    "paths": {
+      "@plugin/*": ["../pkm-assistant/*", "../PKM Assistant/*"]
+    }
+  },
+  "include": ["lib", "mock", "scenarios", "types", "run.ts", "esbuild.harness.ts"],
+  "exclude": ["node_modules", "dist"]
+}

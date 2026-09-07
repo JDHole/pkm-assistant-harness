@@ -1,41 +1,85 @@
-# Harness „Szklane Pudło" (S26) — testowanie pluginu bez Obsidiana
+# Harness „Szklane Pudło" — testowanie pluginu PKM Assistant bez Obsidiana
 
-Narzędzie **wewnętrzne** (dev-only, nie wchodzi do `dist/main.js`). Odpala **prawdziwy plugin**
-— ten sam `PKMAssistantPlugin` z `src/main.js`, pełny bootstrap `initialize()`, prawdziwi agenci z YAML,
-prawdziwy łańcuch uprawnień, prawdziwa pętla `agent-loop` i trace — w czystym Node, na
-tymczasowym vaulcie-atrapie. Podstawione jest wyłącznie to, czego poza Obsidianem fizycznie
-nie ma: moduł `obsidian` (mock przez esbuild alias) i szczypta DOM. **Zero forka logiki — testujemy dokładnie ten kod, który dostaje user.**
+Narzędzie **deweloperskie** dla wtyczki [PKM Assistant](https://github.com/JDHole/pkm-assistant).
+Odpala **prawdziwy plugin** — ten sam `PKMAssistantPlugin` z jego `src/main.ts`, pełny bootstrap
+`initialize()`, prawdziwych agentów z YAML, prawdziwy łańcuch uprawnień, prawdziwą pętlę
+`agent-loop` i trace — w czystym Node, na tymczasowym vaulcie-atrapie. Podstawione jest wyłącznie
+to, czego poza Obsidianem fizycznie nie ma: moduł `obsidian` (atrapa przez alias esbuilda)
+i szczypta DOM. **Zero forka logiki — testujemy dokładnie ten kod, który dostaje user.**
 
-Spec i decyzje: `Refaktor/Sprinty/S26_Harness_Szklane_Pudlo_SPEC.md`.
-Wizja-rodzic: `Nauka/Wizje/WIZJA_Szklane_Pudlo.md` (to jest piętro 2 piramidy).
+## Dlaczego osobne repo
+
+Do 2026-09-07 harness siedział w katalogu `harness/` repo pluginu. Wyprowadził się, bo walidator
+katalogu społeczności Obsidiana lintuje **całe** repo wtyczki, a harness (narzędzie testowe w Node,
+z celowymi granicami typów w atrapach) generował tysiące ostrzeżeń o kodzie, który nigdy nie trafia
+do użytkownika.
+
+W repo pluginu została po nim **jedna rzecz**: katalog `test-support/` — atrapa modułu `obsidian`,
+shim DOM i preload AVA. Musiała tam zostać, bo bez niej nie wstaje `npm test` samego pluginu.
+Harness sięga po nią przez alias, więc **atrapa jest jedna, a konsumentów dwóch**.
+
+## Zanim odpalisz
+
+```bash
+# oba repo obok siebie:
+git clone https://github.com/JDHole/pkm-assistant.git
+git clone https://github.com/JDHole/pkm-assistant-harness.git
+
+cd pkm-assistant && npm install      # harness bundluje ŹRÓDŁA pluginu → potrzebuje jego node_modules
+cd ../pkm-assistant-harness && npm install
+```
+
+Harness szuka pluginu w tej kolejności (`lib/pluginRoot.ts`):
+
+1. zmienna środowiskowa `PKM_ASSISTANT_ROOT` (tak robi CI),
+2. katalog-brat: `../pkm-assistant`, potem `../PKM Assistant`.
+
+Kandydat musi mieć `manifest.json` i `test-support/obsidian.ts`; gdy któregoś brakuje, dostajesz
+komunikat z instrukcją, nie „module not found".
+
+```bash
+PKM_ASSISTANT_ROOT=/sciezka/do/pluginu npm run scenarios   # plugin gdzie indziej niż obok
+```
 
 ## Komendy
 
 ```bash
 npm run harness              # build + dry-boot: plugin wstaje w Node, raport DoD (bez modelu)
-npm run harness:selftest     # pełny cykl pętli z fake-serwerem SSE (offline, bez klucza, 0 kosztów)
-npm run harness:scenarios    # 34 scenariuszy-łamaczy [OFFLINE deterministyczny] — regression suite
-npm run harness:scenarios:live   # te same scenariusze na ŻYWYM DeepSeeku (wymaga klucza, płatne grosze)
-npm run harness:build        # sam build (harness/dist/)
+npm run selftest             # pełny cykl pętli z fake-serwerem SSE (offline, bez klucza, 0 kosztów)
+npm run scenarios            # 34 scenariuszy-łamaczy [OFFLINE deterministyczny] — regression suite
+npm run scenarios:live       # te same scenariusze na ŻYWYM DeepSeeku (wymaga klucza, płatne grosze)
+npm run build                # sam build (dist/)
+npm test                     # testy jednostkowe SAMEGO harnessu (AVA, bez pluginu)
+npm run typecheck            # tsc --noEmit; zakłada plugin OBOK (patrz `paths` w tsconfig.json)
 ```
 
-**Harness jest linterowany jak reszta repo (werdykt Kuby 2026-09-02).** `npm run lint` obejmuje
-`harness/**/*.{js,ts}` — WSPÓLNY blok `no-restricted-imports` razem z `modules/`, `src/`,
-`config/` i `utils/` (`eslint.config.js:170`, ta sama złota zasada egzekwowana wzorcami
-`deepImportPatterns`: poza modułem importujemy tylko przez `modules/<nazwa>/index.js` i
-`core/index.js`), nie osobny blok. Dwa wyjątki są PER-PLIKOWE, w osobnych blokach niżej:
-`eslint.config.js:216` dla `harness/scenarios/33_skill_marker.ts` (wolno deep-importować
-WYŁĄCZNIE `modules/chat/chat/InlineChipPlugin.js`) i `:234` dla
-`harness/scenarios/35_artefakt_approval.ts` (WYŁĄCZNIE `modules/artifacts/artifactButtons.js` i
-`artifactSummon.js`) — symbole świadomie usunięte z barreli w S30 Z4, których potrzebują te dwa
-scenariusze (dopisanie ich z powrotem do barreli byłoby poszerzaniem produkcyjnego API pod
-testy). Każdy INNY deep-import z harnessu jest błędem lintu. Uzasadnienie każdego wyjątku siedzi
-w komentarzu nad blokiem tego pliku w `eslint.config.js`.
+`npm run selftest` i `npm run scenarios` są **bramką repo pluginu** — jego CI klonuje to repo
+i puszcza je na swoim checkoucie (`PKM_ASSISTANT_ROOT`). Nasz własny CI robi to odwrotnie:
+klonuje plugin obok i sprawdza, że harness dalej go stawia.
+
+## Jak kod pluginu wchodzi do harnessu
+
+Wszystko przez alias `@plugin/...`, rozwiązywany przy budowie w `esbuild.harness.ts`:
+
+```ts
+import PKMAssistantPlugin from '@plugin/src/main.js';
+import { runAgentLoop } from '@plugin/modules/agent-loop/index.js';   // zawsze barrel modułu
+import { shutdownHarnessRuntime } from '@plugin/test-support/obsidian.js';
+```
+
+Obowiązuje **złota zasada pluginu**: z modułu importujemy tylko jego `index.js`, z `core/` tylko
+`core/index.js`. Dwa scenariusze świadomie sięgają po CZYSTE helpery z bebechów, bo testują
+dokładnie je (`33_skill_marker` → `modules/chat/chat/InlineChipPlugin.js`, `35_artefakt_approval`
+→ `modules/artifacts/artifactButtons.js` i `artifactSummon.js`); poszerzanie barreli produkcyjnych
+pod test byłoby udawaniem publicznego API, którego nikt inny nie używa. Do 2026-09-07 pilnował
+tego ESLint pluginu (per-plikowe wyjątki w jego `eslint.config.js`) — po przenosinach zasada jest
+konwencją tego repo.
+
 
 Bieg eksploracyjny (dowolny prompt, żywy model):
 
 ```bash
-node harness/dist/run.js --agent Tester --prompt "przeczytaj Notatki/powitanie.md i streść"
+node dist/run.js --agent Tester --prompt "przeczytaj Notatki/powitanie.md i streść"
 ```
 
 Flagi: `--agent <nazwa>` `--prompt "<...>"` `--autonomy yolo|edge|all` (default edge)
@@ -47,7 +91,7 @@ Flagi: `--agent <nazwa>` `--prompt "<...>"` `--autonomy yolo|edge|all` (default 
 czerwona albo bieg się wywrócił, `2` = brak klucza przy biegu żywym. Od 2026-08-23 dotyczy to tak
 samo dry-boota, **selftestu (FAZA B — wcześniej wychodził zerem zawsze)** i scenariuszy; `--json`
 niesie ten sam werdykt w polach `ok` i `dod`. Pozycja DoD czytana z trace przy trace wyłączonym
-lub nieobecnym jest FAIL z powodem, nie cichy PASS — strażnik: `harness/lib/report.test.ts`.
+lub nieobecnym jest FAIL z powodem, nie cichy PASS — strażnik: `lib/report.test.ts`.
 
 **F2.9 (rejestr ryzyk 01.09):** pozycja DoD `finalText niepusty` dawniej przechodziła na
 `length > 0` — jeden token modelu ("Po", "OK", "Gotowe.") świecił zielono bez żadnego dowodu, że
@@ -55,18 +99,18 @@ zlecona robota w ogóle została podjęta. Bramka dziś sprawdza w tej kolejnoś
 kompletnie PUSTY (po przycięciu) jest ZAWSZE FAIL, niezależnie od tego, czy narzędzie było
 wywoływane — **warunek konieczny**, egzekwuje to, co nazwa pozycji obiecuje (W6-01, review fali 2
 2026-09-04: stary warunek `(len >= próg || attemptedTool)` przepuszczał pusty finalText jako
-zielony, gdy tylko padła jakakolwiek próba narzędzia — a w `harness:selftest` próba jest ZAWSZE,
+zielony, gdy tylko padła jakakolwiek próba narzędzia — a w `selftest` próba jest ZAWSZE,
 więc pozycja była niefalsyfikowalna). (2) Dopiero dla NIEPUSTEGO `finalText`: **≥ 40 znaków**
-(stała `MIN_FINAL_TEXT_LENGTH` w `harness/lib/report.ts`, z komentarzem uzasadniającym akurat tę
+(stała `MIN_FINAL_TEXT_LENGTH` w `lib/report.ts`, z komentarzem uzasadniającym akurat tę
 liczbę) **ALBO** bieg podjął choć jedną próbę narzędzia — LICZY SIĘ też próba ODBITA
-(nieudana/zablokowana), bo `isNoAttemptRun` (reużyty wprost z `harness/scenarios/_asserts.ts`, nie
+(nieudana/zablokowana), bo `isNoAttemptRun` (reużyty wprost z `scenarios/_asserts.ts`, nie
 duplikowany) patrzy strukturalnie na obecność wpisu w `toolsUsed`/`toolCallDetails`, nie na jego
 wynik. Gdy żaden z warunków nie jest spełniony, pozycja jest FAIL z powodem cytującym odpowiedź
-modelu i liczbę znaków. Strażnik: `harness/lib/report.test.ts` (pusty finalText z niepustą próbą
+modelu i liczbę znaków. Strażnik: `lib/report.test.ts` (pusty finalText z niepustą próbą
 narzędzia, jednotokenowa odpowiedź bez narzędzi, długa odpowiedź bez narzędzi, krótka odpowiedź z
 jedną — nawet odbitą — próbą narzędzia, brak `result`).
 
-**Statusy scenariuszy (`harness/scenarios/_runner.ts`), pełny słownik:** `GREEN` = `asserts()`
+**Statusy scenariuszy (`scenarios/_runner.ts`), pełny słownik:** `GREEN` = `asserts()`
 przeszło i wykonało co najmniej jedno zliczane sprawdzenie, `RED` = padła asercja albo błąd
 infrastruktury/biegu, `SKIP` = scenariusz pominięty w `--live` (deklaruje `liveSkip` — wymusza
 zachowanie, o którym żywy model decyduje sam), `EMPTY` = `asserts()` przeszło bez rzucenia błędu,
@@ -81,25 +125,22 @@ trace i zostawia temp-vault. **Fail-closed:** kod wyjścia `1` pada nie tylko pr
 przy `EMPTY` i `NO_ATTEMPT` (`anyRed || anyEmpty || anyNoAttempt || total === 0`, `_runner.ts`)
 — scenariusz, który niczego nie zweryfikował, liczy się w bramce jako oblany, nie jako sukces.
 
-**ŻADNA komenda harnessa nie jest częścią `npm test`** — `npm test` zostaje darmowe i offline.
-Sam KOD harnessu za to jest pod bramkami jak reszta repo (werdykt 2026-09-03): `npm test` zbiera
-`harness/**/*.test.ts` (nie tylko `harness/lib/`), `npm run lint` pilnuje w nim złotej zasady
-importów (harness to pierwszy konsument pluginu „z zewnątrz", więc wchodzi przez barrele; dwa
-scenariusze z celowym deep-importem czystych helperów mają per-plikowe wyjątki w
-`eslint.config.js`), `npm run typecheck` obejmował go od TS-5. Poza `lint:obsidian` — powód
-w `eslint.obsidian.config.js`.
+**ŻADNA komenda harnessa nie jest częścią `npm test` PLUGINU** — tamto zostaje darmowe
+i offline. Sam KOD harnessu ma własne testy jednostkowe (`npm test` TUTAJ: `lib/*.test.ts`
++ `scenarios/*.test.ts` — asercje, raport, rejestr scenariuszy, kontrakt biegu live; żaden
+z nich nie importuje pluginu, więc nie potrzebują atrapy `obsidian`).
 Scenariusze `--live` i bieg eksploracyjny bez `--offline` robią realne requesty do DeepSeek
 (koszt: ułamki centa za bieg — DeepSeek jest tani, ale świadomie).
 
 ## Klucz API (bieg żywy)
 
-Plik `harness/.env.local` (gitignored — NIGDY nie commitować, nie wklejać do czatów):
+Plik `.env.local` (gitignored — NIGDY nie commitować, nie wklejać do czatów):
 
 ```
 DEEPSEEK_API_KEY=sk-...
 ```
 
-Szablon: `harness/.env.example`. Bez klucza biegi żywe kończą się czytelnym komunikatem
+Szablon: `.env.example`. Bez klucza biegi żywe kończą się czytelnym komunikatem
 i `exit 2` (odróżnialne od crashu). Klucz jest mostkowany w locie do
 `pkmAssistant.chat.apiKeys.deepseek` (produkcyjny `modelResolver` czyta tylko stamtąd) — zapisem do
 SUROWEGO worka (`env.settingsStore.raw`), nie przez obserwowane proxy: klucz wkłada harness, nie user,
@@ -119,13 +160,13 @@ run.js / scenarios.js  (Node)
           (mcpClient.executeToolCall z autonomią), trace (plugin.traceLog)
 ```
 
-Build: `esbuild.harness.ts` — alias `obsidian → harness/mock/obsidian.ts`, platform=node.
+Build: `esbuild.harness.ts` — alias `obsidian → <plugin>/test-support/obsidian.ts`, platform=node.
 Każdy build harnessa jest przy okazji load-testem bundla (łapie cykle importów barreli —
 lekcja z E2.8).
 
 ## Scenariusze — jak czytać i jak dodać
 
-Scenariusz = plik `harness/scenarios/NN_nazwa.ts`: `{name, opis, agent, autonomy, approve,
+Scenariusz = plik `scenarios/NN_nazwa.ts`: `{name, opis, agent, autonomy, approve,
 maxIterations, fixtures (nadpisy plików vaulta), setup({plugin, vaultRoot, app}) (opcjonalny
 hook PO boocie a PRZED turą modelu — do rzeczy, których w vaulcie nie ma, np. podpięcie atrapy
 zewnętrznego serwera MCP przez DI), offlineScript (skrypt fake-serwera SSE), livePrompt (prompt
@@ -136,7 +177,7 @@ asserts({result, trace, vaultRoot, before, approvals, turn, plugin})}` + rejestr
 
 | Narzędzie | Skąd | Po co |
 |---|---|---|
-| `setHarnessRequestUrlRoutes(routes)` / `clearHarnessRequestUrlRoutes()` | `mock/obsidian.js` | Drugi kanał wyjścia pluginu na świat: `requestUrl` (wyszukiwarka webowa, generowanie obrazów, STT). Trasa = `{match: substring \| RegExp \| (url)=>bool, handler(req) => {status?, text?, json?, arrayBuffer?, headers?}}`. **Żaden realny HTTP nie leci** — handler zwraca gotowy obiekt, a router dopełnia brakujące pola (`text`↔`json`, status 200). Bez trasy leci blokada: `599` + ostrzeżenie w logu (zaślepka GitHuba i updater zdjęte 2026-09-04, D1 — nie ma już żadnej trasy domyślnej). |
+| `setHarnessRequestUrlRoutes(routes)` / `clearHarnessRequestUrlRoutes()` | `@plugin/test-support/obsidian.js` (atrapa mieszka w repo pluginu) | Drugi kanał wyjścia pluginu na świat: `requestUrl` (wyszukiwarka webowa, generowanie obrazów, STT). Trasa = `{match: substring \| RegExp \| (url)=>bool, handler(req) => {status?, text?, json?, arrayBuffer?, headers?}}`. **Żaden realny HTTP nie leci** — handler zwraca gotowy obiekt, a router dopełnia brakujące pola (`text`↔`json`, status 200). Bez trasy leci blokada: `599` + ostrzeżenie w logu (zaślepka GitHuba i updater zdjęte 2026-09-04, D1 — nie ma już żadnej trasy domyślnej). |
 | `startFakeOllamaServer({script})` + `ollamaTextTurn(text, {thinking})` | `mock/fake-ollama-server.js` | Ollama gada NDJSON pod `<host>/api/chat` i kończy na `done_reason`, nie na `data: [DONE]` — `fake-llm-server` (SSE OpenAI) jej nie udaje. Tury tekstowe z natywnym myśleniem; tool calli ten serwer świadomie nie umie. |
 | `setHarnessLmStudioEndpoint(url)` / `setHarnessOllamaHost(origin)` | `lib/harnessProviders.ts` | Adres fake-serwera dla platform lokalnych. **Żadnych podklas**: dostawcy są bezstanowi, więc harness owija ich obiektem, który podmienia WYŁĄCZNIE endpoint (`withEndpoint`), a resztę — budowę żądania, dekoder strumienia, parser myślenia — bierze z produkcji. Podmianę wkłada `boot.ts` do `plugin.runtimeConfig.chat.providers` PRZED `onload()` (C-02: `runtime.config === plugin.runtimeConfig`). LM Studio bez jawnego ustawienia bierze wspólny endpoint harnessa, więc `offlineScript` działa mu od ręki. |
 | `getHarnessCompletions(platform)` / `clearHarnessCompletions()` | `lib/harnessProviders.ts` | Podsłuch KOMPLETNEJ odpowiedzi modelu, gdy wynik pętli jej nie wystawia — dziś jedyna droga do `reasoning_content` (patrz scenariusz 25). Wpina się przez OPAKOWANIE MODELU (`tapModel` w `lib/runTurn.ts` owija `ChatModel.stream`), bo dostawcy nie mają `stream()`. Etykieta platformy to `providerId` ROZSTRZYGNIĘTEGO modelu, więc agent z własnym modelem w YAML-u (`model: lm_studio/…`) trafia pod swoją platformę, a nie pod globalny wybór usera. Niczego nie zmienia po drodze. |
