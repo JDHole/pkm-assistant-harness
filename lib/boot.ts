@@ -14,7 +14,9 @@ import path from 'path';
 import os from 'os';
 import PKMAssistantPlugin from '@plugin/src/main.js';
 import { createMockApp } from '../mock/app.js';
-import { shutdownHarnessRuntime } from '@plugin/test-support/obsidian.js';
+// Atrapa `obsidian` mieszka w TYM repo od 2026-09-11 (patrz `esbuild.harness.ts`), nie w
+// drzewie pluginu — więc import jest lokalny, nie przez alias `@plugin/`.
+import { shutdownHarnessRuntime } from '../test-support/obsidian.js';
 import { harnessProviderOverrides } from './harnessProviders.js';
 import { harnessRoot, pluginRoot } from './pluginRoot.js';
 

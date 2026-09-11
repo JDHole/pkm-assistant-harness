@@ -13,13 +13,13 @@
  *
  * Kolejność globali: dom-shim PRZED bundlem pluginu (boot.js importuje PKMAssistantPlugin).
  */
-import '@plugin/test-support/dom-shim.js';
+import '../test-support/dom-shim.js';
 import fs from 'fs';
 import path from 'path';
 import { bootPlugin, cleanupPlugin, ENV_LOCAL_PATH, TRACE_REL } from '../lib/boot.js';
 import { startFakeLlmServer } from '../mock/fake-llm-server.js';
 import { setHarnessLlmEndpoint } from '../lib/harnessProviders.js';
-import { clearHarnessRequestUrlRoutes } from '@plugin/test-support/obsidian.js';
+import { clearHarnessRequestUrlRoutes } from '../test-support/obsidian.js';
 import { clearHarnessCompletions, setHarnessLmStudioEndpoint, setHarnessOllamaHost } from '../lib/harnessProviders.js';
 import { parseEnvLocal } from '../lib/envLocal.js';
 import { runExploratoryTurn } from '../lib/runTurn.js';
@@ -351,6 +351,6 @@ async function main(): Promise<void> {
 
 main().catch(async (err: RunnerPayload) => {
   process.stderr.write(`\n[harness/scenarios] BŁĄD krytyczny:\n${err?.stack || err}\n`);
-  try { const { shutdownHarnessRuntime } = await import('@plugin/test-support/obsidian.js'); shutdownHarnessRuntime(); } catch { /* best-effort */ }
+  try { const { shutdownHarnessRuntime } = await import('../test-support/obsidian.js'); shutdownHarnessRuntime(); } catch { /* best-effort */ }
   await hardExit(1);
 });

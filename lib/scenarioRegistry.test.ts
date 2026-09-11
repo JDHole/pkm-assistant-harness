@@ -17,7 +17,7 @@
  * ⚠️ Świadomie NIE importuje `{ SCENARIOS }` z `../scenarios/index.js`: ten barrel importuje
  * WSZYSTKIE 34 scenariusze, a część z nich (np. `36_web_provenance.ts`) ciągnie transitywnie
  * moduły dotykające `obsidian` (`modules/web/WebSearchProvider.ts`) — pod gołym AVA/tsx, BEZ
- * aliasu esbuilda `obsidian → @plugin/test-support/obsidian.ts` (ten alias istnieje TYLKO w bundlu
+ * aliasu esbuilda `obsidian → test-support/obsidian.ts` (ten alias istnieje TYLKO w bundlu
  * `dist/*.js`), taki import wywraca się natychmiast (`Cannot find package 'obsidian'`,
  * zweryfikowane empirycznie). Więc — jak `core/PKMEnv.boot_timing.test.ts` (patrz `core/CLAUDE.md`,
  * ten sam wzór dla plików importujących `obsidian`) — czytamy ŹRÓDŁO `index.ts` jako TEKST

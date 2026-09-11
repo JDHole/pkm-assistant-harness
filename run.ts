@@ -12,11 +12,11 @@
  *
  * Kolejność importów: dom-shim (instaluje globale) PRZED bundlem pluginu.
  */
-import '@plugin/test-support/dom-shim.js';
+import './test-support/dom-shim.js';
 import fs from 'fs';
 import fsp from 'fs/promises';
 import path from 'path';
-import { shutdownHarnessRuntime } from '@plugin/test-support/obsidian.js';
+import { shutdownHarnessRuntime } from './test-support/obsidian.js';
 import { startFakeLlmServer, defaultSelftestScript } from './mock/fake-llm-server.js';
 import { setHarnessLlmEndpoint } from './lib/harnessProviders.js';
 import { parseEnvLocal } from './lib/envLocal.js';
