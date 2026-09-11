@@ -34,7 +34,7 @@
  * pokrywają testy jednostkowe `WebReadTool.test.ts`.
  */
 import { textTurn, toolCallTurn, lastToolResults } from '../mock/fake-llm-server.js';
-import { setHarnessRequestUrlRoutes } from '@plugin/test-support/obsidian.js';
+import { setHarnessRequestUrlRoutes } from '../test-support/obsidian.js';
 import { executeWebSearch, isUrlKnown } from '@plugin/modules/web/index.js';
 import { assert, assertFinalText, assertToolErrored, assertToolOk, toolPosts } from './_asserts.js';
 

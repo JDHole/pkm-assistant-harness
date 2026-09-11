@@ -14,9 +14,14 @@ katalogu społeczności Obsidiana lintuje **całe** repo wtyczki, a harness (nar
 z celowymi granicami typów w atrapach) generował tysiące ostrzeżeń o kodzie, który nigdy nie trafia
 do użytkownika.
 
-W repo pluginu została po nim **jedna rzecz**: katalog `test-support/` — atrapa modułu `obsidian`,
-shim DOM i preload AVA. Musiała tam zostać, bo bez niej nie wstaje `npm test` samego pluginu.
-Harness sięga po nią przez alias, więc **atrapa jest jedna, a konsumentów dwóch**.
+W repo pluginu, pod tą samą ścieżką `test-support/register-obsidian-for-ava.mjs`, został tylko
+**lokator**: znajduje checkout TEGO repo (obok, `.harness-ci` w CI, albo przodek katalogu w
+worktree agenta) i importuje stamtąd resztę — bo bez tego nie wstaje `npm test` samego pluginu.
+Sama atrapa modułu `obsidian`, shim DOM i preload AVA mieszkają TU, w `test-support/`, od
+2026-09-11 — z tego samego powodu, dla którego harness się wyprowadził: walidator flagował w
+atrapie rzeczy, których ta z definicji potrzebuje (`globalThis`, gołe timery). **Atrapa jest
+jedna, a konsumentów dwóch**: `npm test` pluginu (przez lokator) i ten harness (przez alias
+esbuilda, `esbuild.harness.ts`).
 
 ## Zanim odpalisz
 
@@ -34,8 +39,8 @@ Harness szuka pluginu w tej kolejności (`lib/pluginRoot.ts`):
 1. zmienna środowiskowa `PKM_ASSISTANT_ROOT` (tak robi CI),
 2. katalog-brat: `../pkm-assistant`, potem `../PKM Assistant`.
 
-Kandydat musi mieć `manifest.json` i `test-support/obsidian.ts`; gdy któregoś brakuje, dostajesz
-komunikat z instrukcją, nie „module not found".
+Kandydat musi mieć `manifest.json`; gdy go brakuje, dostajesz komunikat z instrukcją, nie
+„module not found".
 
 ```bash
 PKM_ASSISTANT_ROOT=/sciezka/do/pluginu npm run scenarios   # plugin gdzie indziej niż obok
@@ -64,7 +69,13 @@ Wszystko przez alias `@plugin/...`, rozwiązywany przy budowie w `esbuild.harnes
 ```ts
 import PKMAssistantPlugin from '@plugin/src/main.js';
 import { runAgentLoop } from '@plugin/modules/agent-loop/index.js';   // zawsze barrel modułu
-import { shutdownHarnessRuntime } from '@plugin/test-support/obsidian.js';
+```
+
+Wyjątek: `obsidian` NIE wchodzi przez `@plugin/` — atrapa mieszka TU (`test-support/`, ten
+katalog), więc kod harnessu ją importuje lokalnie:
+
+```ts
+import { shutdownHarnessRuntime } from '../test-support/obsidian.js';
 ```
 
 Obowiązuje **złota zasada pluginu**: z modułu importujemy tylko jego `index.js`, z `core/` tylko
@@ -160,7 +171,7 @@ run.js / scenarios.js  (Node)
           (mcpClient.executeToolCall z autonomią), trace (plugin.traceLog)
 ```
 
-Build: `esbuild.harness.ts` — alias `obsidian → <plugin>/test-support/obsidian.ts`, platform=node.
+Build: `esbuild.harness.ts` — alias `obsidian → test-support/obsidian.ts` (TEN katalog), platform=node.
 Każdy build harnessa jest przy okazji load-testem bundla (łapie cykle importów barreli —
 lekcja z E2.8).
 
@@ -177,7 +188,7 @@ asserts({result, trace, vaultRoot, before, approvals, turn, plugin})}` + rejestr
 
 | Narzędzie | Skąd | Po co |
 |---|---|---|
-| `setHarnessRequestUrlRoutes(routes)` / `clearHarnessRequestUrlRoutes()` | `@plugin/test-support/obsidian.js` (atrapa mieszka w repo pluginu) | Drugi kanał wyjścia pluginu na świat: `requestUrl` (wyszukiwarka webowa, generowanie obrazów, STT). Trasa = `{match: substring \| RegExp \| (url)=>bool, handler(req) => {status?, text?, json?, arrayBuffer?, headers?}}`. **Żaden realny HTTP nie leci** — handler zwraca gotowy obiekt, a router dopełnia brakujące pola (`text`↔`json`, status 200). Bez trasy leci blokada: `599` + ostrzeżenie w logu (zaślepka GitHuba i updater zdjęte 2026-09-04, D1 — nie ma już żadnej trasy domyślnej). |
+| `setHarnessRequestUrlRoutes(routes)` / `clearHarnessRequestUrlRoutes()` | `test-support/obsidian.js` (atrapa mieszka w TYM repo) | Drugi kanał wyjścia pluginu na świat: `requestUrl` (wyszukiwarka webowa, generowanie obrazów, STT). Trasa = `{match: substring \| RegExp \| (url)=>bool, handler(req) => {status?, text?, json?, arrayBuffer?, headers?}}`. **Żaden realny HTTP nie leci** — handler zwraca gotowy obiekt, a router dopełnia brakujące pola (`text`↔`json`, status 200). Bez trasy leci blokada: `599` + ostrzeżenie w logu (zaślepka GitHuba i updater zdjęte 2026-09-04, D1 — nie ma już żadnej trasy domyślnej). |
 | `startFakeOllamaServer({script})` + `ollamaTextTurn(text, {thinking})` | `mock/fake-ollama-server.js` | Ollama gada NDJSON pod `<host>/api/chat` i kończy na `done_reason`, nie na `data: [DONE]` — `fake-llm-server` (SSE OpenAI) jej nie udaje. Tury tekstowe z natywnym myśleniem; tool calli ten serwer świadomie nie umie. |
 | `setHarnessLmStudioEndpoint(url)` / `setHarnessOllamaHost(origin)` | `lib/harnessProviders.ts` | Adres fake-serwera dla platform lokalnych. **Żadnych podklas**: dostawcy są bezstanowi, więc harness owija ich obiektem, który podmienia WYŁĄCZNIE endpoint (`withEndpoint`), a resztę — budowę żądania, dekoder strumienia, parser myślenia — bierze z produkcji. Podmianę wkłada `boot.ts` do `plugin.runtimeConfig.chat.providers` PRZED `onload()` (C-02: `runtime.config === plugin.runtimeConfig`). LM Studio bez jawnego ustawienia bierze wspólny endpoint harnessa, więc `offlineScript` działa mu od ręki. |
 | `getHarnessCompletions(platform)` / `clearHarnessCompletions()` | `lib/harnessProviders.ts` | Podsłuch KOMPLETNEJ odpowiedzi modelu, gdy wynik pętli jej nie wystawia — dziś jedyna droga do `reasoning_content` (patrz scenariusz 25). Wpina się przez OPAKOWANIE MODELU (`tapModel` w `lib/runTurn.ts` owija `ChatModel.stream`), bo dostawcy nie mają `stream()`. Etykieta platformy to `providerId` ROZSTRZYGNIĘTEGO modelu, więc agent z własnym modelem w YAML-u (`model: lm_studio/…`) trafia pod swoją platformę, a nie pod globalny wybór usera. Niczego nie zmienia po drodze. |

@@ -35,6 +35,6 @@
       "@plugin/*": ["../pkm-assistant/*", "../PKM Assistant/*"]
     }
   },
-  "include": ["lib", "mock", "scenarios", "types", "run.ts", "esbuild.harness.ts"],
+  "include": ["lib", "mock", "scenarios", "types", "test-support", "run.ts", "esbuild.harness.ts"],
   "exclude": ["node_modules", "dist"]
 }

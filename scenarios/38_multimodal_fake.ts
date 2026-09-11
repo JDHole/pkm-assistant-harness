@@ -21,7 +21,7 @@
 import fs from 'fs';
 import path from 'path';
 import { textTurn, toolCallTurn } from '../mock/fake-llm-server.js';
-import { setHarnessRequestUrlRoutes } from '@plugin/test-support/obsidian.js';
+import { setHarnessRequestUrlRoutes } from '../test-support/obsidian.js';
 import { transcribeAudio } from '@plugin/modules/multimodal/index.js';
 import { assert, assertFinalText, assertToolOk, listVaultFiles, readVaultFile } from './_asserts.js';
 

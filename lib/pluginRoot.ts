@@ -3,17 +3,16 @@
  *
  * PO CO: harness bootuje PRAWDZIWY plugin, ale od 2026-09-07 nie mieszka już w jego repo
  * (walidator katalogu Obsidiana lintuje CAŁE repo pluginu, a narzędzie testowe nie jest
- * jego częścią). Kod pluginu wchodzi tu przez alias `@plugin/...`, a atrapa `obsidian`
- * została po tamtej stronie, w `test-support/` — bo bez niej nie wstaje `npm test` pluginu.
- * Ten plik rozstrzyga, na jaki katalog te ścieżki wskazują.
+ * jego częścią). Kod pluginu wchodzi tu przez alias `@plugin/...`. Atrapa `obsidian` mieszka
+ * od 2026-09-11 w TYM repo (`test-support/`, patrz `esbuild.harness.ts`) — z tego samego powodu:
+ * walidator flagował w niej rzeczy, których atrapa z definicji potrzebuje. Ten plik rozstrzyga
+ * tylko, na jaki katalog wskazuje alias `@plugin/`.
  *
  * KOLEJNOŚĆ SZUKANIA:
  *   1. zmienna środowiskowa `PKM_ASSISTANT_ROOT` (tak robi CI: klonuje oba repo obok siebie
  *      i wskazuje harnessowi checkout pluginu),
  *   2. katalog-brat obok tego repo: `../pkm-assistant`, potem `../PKM Assistant`.
- * Kandydat liczy się, gdy ma `manifest.json`. Wybrany korzeń musi mieć jeszcze
- * `test-support/obsidian.ts` — inaczej dostajesz osobny, czytelny komunikat (to jest
- * dokładnie ten przypadek, gdy ktoś wskazał plugin sprzed przenosin harnessu).
+ * Kandydat liczy się, gdy ma `manifest.json`.
  *
  * Rozstrzygnięcie jest LENIWE i zapamiętywane: `esbuild.harness.ts` pyta o nie przy budowie
  * (alias), a `lib/boot.ts` przy biegu (ścieżka do `manifest.json` pluginu).
@@ -30,9 +29,6 @@ const KANDYDACI = ['pkm-assistant', 'PKM Assistant'];
 
 /** Plik, po którym poznajemy repo pluginu. */
 const ZNACZNIK = 'manifest.json';
-
-/** Katalog atrap, które zostały po stronie pluginu (patrz nagłówek). */
-const ATRAPY = path.join('test-support', 'obsidian.ts');
 
 let zapamietanyKorzenHarnessu: string | null = null;
 let zapamietanyKorzenPluginu: string | null = null;
@@ -108,16 +104,6 @@ export function pluginRoot(): string {
             + sprawdzone.map(s => '            - ' + s).join('\n') + '\n'
             + '          Sklonuj plugin OBOK tego repo (https://github.com/JDHole/pkm-assistant)\n'
             + `          albo wskaż go zmienną środowiskową ${ENV_ROOT}=<ścieżka do repo pluginu>.`,
-        );
-    }
-
-    if (!fs.existsSync(path.join(wybrany, ATRAPY))) {
-        throw new Error(
-            `[harness] ${wybrany} to repo pluginu, ale nie ma w nim ${ATRAPY}.\n`
-            + '          Harness bierze atrapę `obsidian` stamtąd (jedna atrapa, dwóch konsumentów:\n'
-            + '          `npm test` pluginu i ten harness). Katalog `test-support/` istnieje od\n'
-            + '          2026-09-07 — zaktualizuj plugin albo wskaż nowszy checkout przez '
-            + ENV_ROOT + '.',
         );
     }
 

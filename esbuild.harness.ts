@@ -9,12 +9,16 @@
  *   `run.ts`               → `dist/run.js`        (dry-boot i bieg eksploracyjny)
  *   `scenarios/_runner.ts` → `dist/scenarios.js`  (scenariusze-łamacze)
  *
- * SEDNO — dwa aliasy, obydwa liczone od korzenia repo PLUGINU (`lib/pluginRoot.ts`):
- *   `@plugin/<cokolwiek>` → `<plugin>/<cokolwiek>`             (kod wtyczki, przez barrele)
- *   `obsidian`            → `<plugin>/test-support/obsidian.ts` (atrapa hosta)
+ * SEDNO — dwa aliasy, o RÓŻNYM pochodzeniu (od 2026-09-11):
+ *   `@plugin/<cokolwiek>` → `<plugin>/<cokolwiek>`                  (kod wtyczki, przez barrele,
+ *                                                                    korzeń z `lib/pluginRoot.ts`)
+ *   `obsidian`            → `<TEN katalog>/test-support/obsidian.ts` (atrapa hosta, TU, nie w pluginie)
  * Bundlujemy DOKŁADNIE ten kod wtyczki, który dostaje użytkownik; podstawiamy tylko moduł,
- * którego poza Obsidianem fizycznie nie ma. Atrapa została w repo pluginu, bo bez niej nie
- * wstaje jego własne `npm test` — jedna atrapa, dwóch konsumentów.
+ * którego poza Obsidianem fizycznie nie ma. Atrapa mieszka w TYM repo (a nie w repo pluginu, jak
+ * do 2026-09-07/11) — walidator katalogu Obsidiana lintuje CAŁE repo pluginu i flagował w niej
+ * rzeczy, których atrapa z definicji potrzebuje (`globalThis`, gołe timery). `npm test` pluginu
+ * dostaje ją stąd przez lokator (`test-support/register-obsidian-for-ava.mjs` w repo pluginu) —
+ * jedna atrapa, dwóch konsumentów, jedno miejsce zamieszkania.
  *
  * KONTRAKT SPECYFIERÓW (TS-0 pluginu): w kodzie importy kończą się na `.js`, a na dysku leżą
  * pliki `.ts`. Dla importów WEWNĄTRZ drzewa pluginu robi to esbuild sam (importer jest `.ts`),
@@ -106,9 +110,12 @@ function rozwiazWPluginie(korzen: string, wzgledna: string): string {
     );
 }
 
-/** Dwa aliasy do drzewa pluginu (patrz nagłówek). */
+/**
+ * Dwa aliasy (patrz nagłówek): `@plugin/` do drzewa pluginu (`korzen`), `obsidian` do atrapy
+ * TEGO repo (`HARNESS_DIR`) — dlatego `korzen` służy tylko pierwszemu z nich.
+ */
 function pluginTreePlugin(korzen: string): Plugin {
-    const atrapaObsidiana = path.join(korzen, 'test-support', 'obsidian.ts');
+    const atrapaObsidiana = path.join(HARNESS_DIR, 'test-support', 'obsidian.ts');
     return {
         name: 'plugin-tree',
         setup(build) {
