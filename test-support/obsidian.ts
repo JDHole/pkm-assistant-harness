@@ -477,6 +477,34 @@ export class MarkdownRenderer {
     static async renderMarkdown() {}
 }
 
+// ── CLI Obsidiana (`Plugin#registerCliHandler`, API od 1.12.2) ──
+//
+// Kontrakt 1:1 z `obsidian.d.ts` pluginu (`node_modules/obsidian/obsidian.d.ts:1593-1640,5035-5048`):
+// `CliData` to worek `string | 'true'` (Obsidian nie różnicuje boolowskich flag od tekstowych na
+// wejściu handlera), `CliFlags` opisuje autouzupełnianie/pomoc, `CliHandler` zwraca `string`
+// (JSON, kontrakt koperty leży w `modules/cli/response.ts` pluginu, tej atrapy to nie dotyczy —
+// ona tylko WOŁA to, co plugin zarejestrował, tak jak zrobiłby to Obsidian).
+export interface CliData {
+    [key: string]: string | 'true';
+}
+
+export interface CliFlag {
+    value?: string;
+    description: string;
+    required?: boolean;
+}
+
+export type CliFlags = Record<string, CliFlag>;
+
+export type CliHandler = (params: CliData) => string | Promise<string>;
+
+/** Jedna zarejestrowana komenda CLI — dokładnie to, co `registerCliHandler` dostał na wejściu. */
+export interface RegisteredCliHandler {
+    description: string;
+    flags: CliFlags | null;
+    handler: CliHandler;
+}
+
 // ── Plugin: działające loadData/saveData + registerInterval tracking + no-opy ──
 export class Plugin {
     app: AppLike | undefined;
@@ -485,6 +513,8 @@ export class Plugin {
     /** Dry-boot ma POKAZAĆ, że komendy i ikony wstążki naprawdę się zarejestrowały. */
     _registeredCommands: unknown[];
     _registeredRibbonIcons: { icon: unknown; title: unknown }[];
+    /** Komendy CLI zarejestrowane przez `registerCliHandler`, kluczowane pełnym id (`<plugin>:<akcja>`). */
+    _registeredCliHandlers: Map<string, RegisteredCliHandler>;
 
     constructor(app: AppLike | undefined, manifest?: { id?: string }) {
         this.app = app;
@@ -494,6 +524,7 @@ export class Plugin {
         // przechodziła przez harness niezauważona. Trzymamy same zarejestrowane definicje.
         this._registeredCommands = [];
         this._registeredRibbonIcons = [];
+        this._registeredCliHandlers = new Map();
     }
 
     _dataPath() {
@@ -542,6 +573,29 @@ export class Plugin {
     registerObsidianProtocolHandler() {}
     registerEditorExtension() {}
     registerEditorSuggest() {}
+    /**
+     * `Plugin#registerCliHandler` (Obsidian ≥ 1.12.2). Kontrakt realnego hosta: id komendy musi
+     * być globalnie unikalne — próba rejestracji duplikatu RZUCA `Error` (dosłowny cytat z
+     * `obsidian.d.ts`: „Attempting to register a command that is already registered will throw
+     * an Error."). `modules/cli/register.ts` pluginu na tym polega (każda z czterech komend leci
+     * w OSOBNYM try/catch właśnie na wypadek duplikatu przy drugim `onload()` w tej samej sesji).
+     *
+     * ⚠️ ARROW FUNCTION, NIE metoda prototypu — `modules/cli/register.ts` pluginu WYCIĄGA tę
+     * funkcję z hosta do lokalnej stałej (`const registerCliHandler = host.registerCliHandler`)
+     * i woła ją ODDZIELONĄ od `this` (`registerCliHandler(spec.id, ...)`, bez `host.`). Zweryfikowane
+     * empirycznie na `npm run selftest`: jako zwykła metoda `this` wewnątrz był `undefined` i
+     * KAŻDA z czterech komend fali 1 padała na starcie („Cannot read properties of undefined
+     * (reading '_registeredCliHandlers')", złapane przez własny try/catch rejestracji pluginu —
+     * boot nie wywracał się, ale zero komend realnie się rejestrowało). Pole strzałkowe ma `this`
+     * zamknięte leksykalnie, więc przeżywa destrukturyzację — tak samo musi działać realny
+     * Obsidian, inaczej ten sam wzór wywalałby się identycznie w produkcji.
+     */
+    registerCliHandler = (command: string, description: string, flags: CliFlags | null, handler: CliHandler): void => {
+        if (this._registeredCliHandlers.has(command)) {
+            throw new Error(`Command "${command}" is already registered.`);
+        }
+        this._registeredCliHandlers.set(command, { description, flags, handler });
+    };
     addChild<T>(c: T): T { this._children.push(c); return c; }
     removeChild<T>(c: T): T { return c; }
     load() {} onload() {} unload() {} onunload() {}
