@@ -54,6 +54,7 @@ npm run selftest             # pełny cykl pętli z fake-serwerem SSE (offline, 
 npm run scenarios            # 37 scenariuszy-łamaczy [OFFLINE deterministyczny] — regression suite
 npm run scenarios:live       # te same scenariusze na ŻYWYM DeepSeeku (wymaga klucza, płatne grosze)
 npm run build                # sam build (dist/)
+npm run build:companion      # build wtyczki-nosiciela CLI (dist/companion/) — patrz niżej
 npm test                     # testy jednostkowe SAMEGO harnessu (AVA, bez pluginu)
 npm run typecheck            # tsc --noEmit; zakłada plugin OBOK (patrz `paths` w tsconfig.json)
 ```
@@ -86,6 +87,39 @@ pod test byłoby udawaniem publicznego API, którego nikt inny nie używa. Do 20
 tego ESLint pluginu (per-plikowe wyjątki w jego `eslint.config.js`) — po przenosinach zasada jest
 konwencją tego repo.
 
+## Wtyczka-nosiciel CLI (`companion/`)
+
+Od 2026-09-20 (werdykt właściciela) narzędzia CLI Obsidiana (`status`/`selftest`/`agent-prompt`/
+`memory-status` — agenci Claude Code pytają plugin o stan z zewnątrz) nie żyją w repo pluginu:
+to narzędzie WEWNĘTRZNE, nie funkcja dla jego userów. Mieszka tu, w `companion/`, jako mała
+prywatna wtyczka Obsidiana (id `pkm-assistant-dev`), instalowana WYŁĄCZNIE w vaulcie właściciela.
+Przy KAŻDYM wywołaniu komendy rozwiązuje żywą instancję hosta `pkm-assistant` z
+`app.plugins.plugins` (`companion/hostPlugin.ts`) na nowo — nigdy nie cache'uje jej w polu klasy,
+bo host bywa przeładowywany niezależnie od tej wtyczki. Osobny tracker (`createInstanceTracker`
+w `cli/commands.ts`) pamięta OSTATNIO WIDZIANĄ instancję wyłącznie do porównania tożsamości
+(`instanceSince`) — jako SŁABĄ referencję (`WeakRef`), więc po zniknięciu hosta GC może
+posprzątać cały jego graf (AgentManager, indeks, pamięci agentów), zamiast trzymać go żywym w
+nieskończoność. Pełny kontrakt komend, koperty i gotchas: `companion/CLAUDE.md`.
+
+**Build i deploy:**
+
+```bash
+npm run build:companion      # dist/companion/main.js + manifest.json
+```
+
+Format `cjs`, `obsidian` **external** (host go dostarcza w runtime — dokładnie jak produkcyjny
+`esbuild.js` pluginu), alias `@plugin/` działa tak samo jak dla `run.js`/`scenarios.js`
+(`esbuild.harness.ts` → `buildCompanion()` + `pluginAliasPlugin`, wariant `pluginTreePlugin` BEZ
+aliasu `obsidian` na atrapę). Deploy do vaulta dewelopera jest WARUNKOWY i plikowy, nie przez
+zmienne `.env`: `companion/deploy.local.json` (gitignored, ten build go NIE TWORZY — szablon w
+`companion/deploy.local.example.json`) niesie `{"vault": "...", "configDir": "..."}`. Brak pliku =
+jedna linia „deploy pominięty" i sukces builda (logika: `lib/companionDeploy.ts`).
+
+**Testowane end-to-end na PRAWDZIWYM pluginie jako hoście** — patrz scenariusz **47** niżej: obie
+wtyczki (plugin + `companion/`) stoją w JEDNEJ atrapie `app`, `companion/main.ts` importuje się
+identycznie jak kod pluginu, tylko `obsidian` w TYM kontekście (bundlowanym przez `buildHarness()`,
+nie `buildCompanion()`) aliasuje się na atrapę — ten sam plik źródłowy, dwa różne buildy, dwa różne
+traktowania `obsidian` (`external` w produkcji, atrapa w scenariuszu).
 
 Bieg eksploracyjny (dowolny prompt, żywy model):
 
@@ -251,14 +285,16 @@ Do tego **14 pisarze sesji (S36)** — event-log przeżywa autozapis i restart (
 - **39-46** — kolejne partie (pancerz ustawień c.d., delegacja/uczciwość suba w tle, ścieżka
   kanoniczna No-Go, Stop, nowy agent z pustą Ekipą, boot bez starterów skilli). Opis każdego w
   nagłówku jego pliku — świadomie nie dublowany tutaj (ogon dokumentacyjny sprzed tego commitu).
-- **47 CLI odczyt** — cztery komendy CLI Obsidiana (`Plugin#registerCliHandler`, ≥1.12.2) fali 1
-  `modules/cli/`: `status`/`selftest`/`agent-prompt`/`memory-status`, wołane DOKŁADNIE tak jak
-  zrobiłby to Obsidian (`handler(params)` na worku `{klucz:'wartość'}`, parsowanie JSON ze
-  „stdout"). Sprawdza kontrakt danych (rozwiązywanie imienia agenta, dokładnie/bez wielkości
-  liter, `agent_not_found`, `memory-status agent=all`) I że żadna z czterech komend niczego nie
-  zapisuje na dysku vaulta (migawka treści+mtime+sha256 całego drzewa przed/po, bez katalogu
-  `.pkm-assistant/logs/` — uzasadnienie w nagłówku pliku scenariusza). Offline-only (CLI nie
-  dotyka modelu).
+- **47 CLI odczyt** — cztery komendy CLI Obsidiana (`Plugin#registerCliHandler`, ≥1.12.2) wtyczki-
+  nosiciela `companion/` (`pkm-assistant-dev:status`/`selftest`/`agent-prompt`/`memory-status`,
+  patrz `companion/CLAUDE.md`): plugin (host) I `companion/` stoją w JEDNEJ atrapie `app`,
+  komendy wołane DOKŁADNIE tak jak zrobiłby to Obsidian (`handler(params)` na worku
+  `{klucz:'wartość'}`, parsowanie JSON ze „stdout"). Sprawdza kontrakt danych (rozwiązywanie
+  imienia agenta, dokładnie/bez wielkości liter, `agent_not_found`, `memory-status agent=all`),
+  zachowanie z HOSTEM NIEOBECNYM (`status` → `ready:false`, pozostałe trzy → `not_ready`) I że
+  żadna komenda niczego nie zapisuje na dysku vaulta (migawka treści+mtime+sha256 całego drzewa
+  przed konstrukcją `companion/` i po wszystkich wywołaniach, bez katalogu `.pkm-assistant/logs/`
+  — uzasadnienie w nagłówku pliku scenariusza). Offline-only (CLI nie dotyka modelu).
 
 Asercje dostają też `plugin` — ŻYWY obiekt pluginu tego biegu (przed cleanupem). Scenariusz może
 po turze wołać produkcyjne API na tym samym temp-vaultcie (`14_sesja_pisarze` symuluje tak autozapis

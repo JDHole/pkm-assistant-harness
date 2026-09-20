@@ -1,40 +1,42 @@
 /**
- * 47_cli_odczyt — komendy CLI Obsidiana (fala 1, `modules/cli/` pluginu) end-to-end, offline.
+ * 47_cli_odczyt — komendy CLI Obsidiana (wtyczka-nosiciel `companion/`, id `pkm-assistant-dev`)
+ * end-to-end, offline.
  *
- * Od Obsidian 1.12.2 plugin rejestruje w `onload()` przez `Plugin#registerCliHandler` cztery
- * komendy TYLKO DO ODCZYTU: `pkm-assistant:status`, `pkm-assistant:selftest`,
- * `pkm-assistant:agent-prompt` (flagi `agent`/`section`), `pkm-assistant:memory-status`
- * (flaga `agent` = imię albo `all`). Kontrakt danych: `modules/cli/CLAUDE.md` w repo pluginu.
+ * Werdykt właściciela 2026-09-20: narzędzia CLI wewnętrzne (agenci Claude Code pytają plugin
+ * o stan) nie żyją w repo pluginu — przeniesione do MAŁEJ PRYWATNEJ wtyczki-nosiciela (`companion/`,
+ * TEN repo), która przy KAŻDYM wywołaniu komendy rozwiązuje żywą instancję hosta
+ * `app.plugins.plugins['pkm-assistant']` (`companion/hostPlugin.ts`). Ten scenariusz stawia
+ * OBIE wtyczki w JEDNEJ atrapie `app`: prawdziwy plugin (jak dotąd, przez `bootPlugin`) I
+ * wtyczkę-nosiciela (`new CompanionPlugin(app, manifest); companion.onload()`), wpina pluginu
+ * pod `app.plugins.plugins['pkm-assistant']`, i woła cztery komendy `pkm-assistant-dev:*`
+ * dokładnie tak, jak zrobiłby to Obsidian z CLI — `handler(params)` na surowym worku
+ * `{klucz: 'wartość'}`, parsując JSON, który handler oddaje na "stdout".
  *
- * Do commitu `feat(test-support): registerCliHandler w atrapie Plugin` atrapa `Plugin` nie miała
- * tej metody — `typeof host.registerCliHandler === 'function'` było `false`, rejestracja kończyła
- * się cicho (`skipped:'unsupported'`) i ŻADNA z czterech komend nigdy nie biegła pod harnessem.
- * Ten scenariusz jest pierwszym biegiem end-to-end: bootuje żywy plugin, wyciąga zarejestrowane
- * handlery z atrapy i woła je DOKŁADNIE TAK, jak zrobiłby to Obsidian z CLI — `handler(params)`
- * na surowym worku `{klucz: 'wartość'}`, parsując JSON, który handler oddaje na "stdout".
- *
- * `liveSkip`: cztery komendy CLI nie dotykają modelu w ogóle (czysty odczyt stanu pluginu) —
+ * `liveSkip`: cztery komendy CLI nie dotykają modelu w ogóle (czysty odczyt stanu hosta) —
  * bieg na żywym DeepSeeku nie dodałby nic ponad offline, tylko kosztowałby. Tura modelu w tym
  * scenariuszu jest tu WYŁĄCZNIE dlatego, że `_runner.ts` zawsze odpala jedną (wzór
  * `45_nowy_agent_pusta_ekipa`/`46_boot_bez_starterow`) — cała weryfikacja CLI dzieje się w
- * `asserts`, PO turze, wołając produkcyjne handlery wprost na żywym `plugin`.
+ * `asserts`, PO turze, wołając produkcyjne handlery wprost na żywej parze plugin+companion.
  *
  * DOWÓD "TYLKO ODCZYT" (punkt e specyfikacji zadania): migawka rekurencyjna CAŁEGO drzewa
- * temp-vaulta (ścieżka + rozmiar + mtime + sha256 treści) TUŻ PRZED i TUŻ PO wywołaniu
- * wszystkich komend tego scenariusza musi wyjść identyczna. Jedyny wykluczony katalog to
- * `.pkm-assistant/logs/` — `Logger`/`LogFileSink` (`core/utils/LogFileSink.ts`) buforuje
- * KAŻDE `log.info/warn/error` z CAŁEGO pluginu (nie tylko CLI) i zrzuca bufor na dysk co
+ * temp-vaulta (ścieżka + rozmiar + mtime + sha256 treści) TUŻ PRZED skonstruowaniem
+ * wtyczki-nosiciela i TUŻ PO wywołaniu WSZYSTKICH komend tego scenariusza (w tym kroku "host
+ * nieobecny" niżej) musi wyjść identyczna. Wykluczone są WYŁĄCZNIE dwa KONKRETNE pliki — sink
+ * `Logger`/`LogFileSink` (`core/utils/LogFileSink.ts`) hosta, `.pkm-assistant/logs/pkm-assistant.log`
+ * + jego rotacja `.pkm-assistant/logs/pkm-assistant.log.old` (`DEFAULT_PATH`/`oldPath` w
+ * `LogFileSink.ts`) — NIE cały katalog `.pkm-assistant/logs/`. `Logger` buforuje KAŻDE
+ * `log.info/warn/error` z CAŁEGO pluginu (nie tylko CLI) i zrzuca bufor na dysk co
  * `flushEveryN=20` wpisów ALBO po debounce ~1s — niezależnie od tego, czy ktokolwiek woła CLI.
- * Boot sam z siebie już zdążył zapełnić bufor (np. `log.info('Plugin', 'File-log sink: ON...')`),
- * więc odpalenie flusha w oknie między dwiema migawkami jest kwestią TIMINGU zegara, nie efektem
- * komend pod testem — dokładnie tak samo zmieniłby ten plik bieg, który w ogóle nie woła CLI.
- * Sama treść vaulta (ustawienia, notatki, YAML agentów, pamięć — DOKŁADNIE to, co
- * `modules/cli/CLAUDE.md` obiecuje nie ruszać) idzie przez migawkę bez wyjątków.
- * `log.debug('CLI', ...)` (jedna linia na KAŻDE wywołanie handlera, patrz `commands.ts`) i tak
- * nie osiąga nawet tego pliku pod domyślnym `debugMode` — próg sinka to `'info'`
- * (`pkmSettings?.debugMode ? 'debug' : 'info'`, `src/main.ts`), a `'debug' < 'info'` w
- * `LEVEL_RANK` — więc gdyby WYŁĄCZNIE ten katalog był pominięty bez powodu, dowód byłby słabszy
- * niż mógłby być; jest pominięty z udokumentowanego, zweryfikowanego wyżej powodu.
+ * Boot sam z siebie już zdążył zapełnić bufor, więc odpalenie flusha w oknie między dwiema
+ * migawkami jest kwestią TIMINGU zegara, nie efektem komend pod testem. Wykluczenie CAŁEGO
+ * katalogu maskowałoby też każdy INNY, NIEOCZEKIWANY plik, który mógłby się tam pojawić — np.
+ * raport `selftest-<stamp>.md`, który produkcyjny `run_self_test()` pluginu (`src/main.ts`) pisze
+ * właśnie tam; komenda CLI `selftest` tej wtyczki go NIE woła (woła `buildSelfTestReport`
+ * bezpośrednio, bez zapisu — patrz `companion/CLAUDE.md`), ale gdyby to się kiedyś zmieniło, ta
+ * migawka MA to złapać. Sama treść vaulta (ustawienia, notatki, YAML agentów, pamięć) idzie przez
+ * migawkę bez wyjątków. Wtyczka-nosiciel sama (konstrukcja + `onload()`, czyste
+ * `registerCliHandler` na SOBIE) nie dotyka dysku w ogóle - migawka "przed" obejmuje też ten
+ * krok, żeby to było zmierzone, nie tylko założone.
  */
 import fs from 'fs';
 import path from 'path';
@@ -42,19 +44,25 @@ import crypto from 'crypto';
 
 import { textTurn } from '../mock/fake-llm-server.js';
 import { assert, assertFinalText, fail, listVaultFiles } from './_asserts.js';
+import CompanionPlugin from '../companion/main.js';
 
 import type { FixturePayload, Scenario } from './_asserts.js';
 import type { RegisteredCliHandler, CliData } from '../test-support/obsidian.js';
-import type { CliResponse, StatusData, AgentPromptData, MemoryStatusData } from '@plugin/modules/cli/index.js';
+import type { CliResponse, StatusData, AgentPromptData, MemoryStatusData } from '../companion/cli/index.js';
 
-const PLUGIN_ID = 'pkm-assistant';
+const HOST_ID = 'pkm-assistant';
+const COMPANION_ID = 'pkm-assistant-dev';
 const CMD = {
-  status: `${PLUGIN_ID}:status`,
-  selftest: `${PLUGIN_ID}:selftest`,
-  agentPrompt: `${PLUGIN_ID}:agent-prompt`,
-  memoryStatus: `${PLUGIN_ID}:memory-status`,
+  status: `${COMPANION_ID}:status`,
+  selftest: `${COMPANION_ID}:selftest`,
+  agentPrompt: `${COMPANION_ID}:agent-prompt`,
+  memoryStatus: `${COMPANION_ID}:memory-status`,
 } as const;
 const EXPECTED_COMMAND_IDS = [CMD.status, CMD.selftest, CMD.agentPrompt, CMD.memoryStatus];
+
+/** Manifest wtyczki-nosiciela dla TEGO biegu - kształt z `companion/manifest.json`, bez
+ *  wczytywania pliku z dysku (scenariusz nie zależy od ścieżki repo tej wtyczki na dysku). */
+const COMPANION_MANIFEST = { id: COMPANION_ID, name: 'PKM Assistant Dev', version: '0.1.0' };
 
 /** Agent z fixture harnessa (`vault-fixture/.pkm-assistant/agents/tester.yaml`, `name: Tester`). */
 const FIXTURE_AGENT = 'Tester';
@@ -63,8 +71,10 @@ const BUILT_IN_AGENT = 'Jaskier';
 
 const ODPOWIEDZ = 'Cztery komendy CLI przeszly test, boot niczego nie napisal.';
 
-/** Katalogi logów pluginu — patrz uzasadnienie w nagłówku pliku. */
-const EXCLUDED_DIRS = ['.pkm-assistant/logs/'];
+/** Sink Loggera hosta + jego rotacja — WYŁĄCZNIE te dwa pliki, patrz uzasadnienie w nagłówku
+ *  pliku i `core/utils/LogFileSink.ts` pluginu (`DEFAULT_PATH`/`oldPath`). Każdy INNY plik w
+ *  `.pkm-assistant/logs/` (np. `selftest-<stamp>.md`) MA wywrócić migawkę "zero zapisu". */
+const EXCLUDED_FILES = ['.pkm-assistant/logs/pkm-assistant.log', '.pkm-assistant/logs/pkm-assistant.log.old'];
 
 interface FileFingerprint {
   size: number;
@@ -72,11 +82,11 @@ interface FileFingerprint {
   sha256: string;
 }
 
-/** Migawka {ścieżka względna → {size, mtimeMs, sha256}} całego drzewa vaulta, bez katalogów logów. */
+/** Migawka {ścieżka względna → {size, mtimeMs, sha256}} całego drzewa vaulta, bez sinka Loggera. */
 function snapshotTree(vaultRoot: string): Record<string, FileFingerprint> {
   const out: Record<string, FileFingerprint> = {};
   for (const rel of listVaultFiles(vaultRoot)) {
-    if (EXCLUDED_DIRS.some((dir) => rel.startsWith(dir))) continue;
+    if (EXCLUDED_FILES.includes(rel)) continue;
     const abs = path.join(vaultRoot, rel);
     const st = fs.statSync(abs);
     const content = fs.readFileSync(abs);
@@ -120,23 +130,34 @@ async function callCli<T>(
 
 export default ({
   file: '47_cli_odczyt',
-  name: 'komendy CLI end-to-end offline',
-  opis: 'plugin rejestruje 4 komendy CLI (status/selftest/agent-prompt/memory-status); wołamy je jak Obsidian i sprawdzamy kontrakt danych oraz że nic na dysku się nie zmieniło',
+  name: 'komendy CLI wtyczki-nosiciela end-to-end offline',
+  opis: 'wtyczka-nosiciel (pkm-assistant-dev) rejestruje 4 komendy CLI wołające żywy plugin (pkm-assistant); sprawdzamy kontrakt danych, zachowanie z hostem nieobecnym i że nic na dysku się nie zmieniło',
   agent: FIXTURE_AGENT,
   autonomy: 'edge',
   approve: 'auto',
   maxIterations: 2,
-  liveSkip: 'komendy CLI nie dotykają modelu (czysty odczyt stanu pluginu) — bieg na żywym DeepSeeku niczego by nie dodał, tylko kosztował',
+  liveSkip: 'komendy CLI nie dotykają modelu (czysty odczyt stanu hosta) — bieg na żywym DeepSeeku niczego by nie dodał, tylko kosztował',
 
   offlineScript: [
     textTurn(ODPOWIEDZ),
   ],
 
   async asserts({ result, vaultRoot, plugin }: FixturePayload) {
-    const handlers = plugin?._registeredCliHandlers as Map<string, RegisteredCliHandler> | undefined;
-    assert(handlers instanceof Map, 'plugin._registeredCliHandlers nie jest Mapą — registerCliHandler(atrapa) się nie wywołał albo zmienił kształt.');
+    // `plugin.app` — ta sama atrapa `app`, na której zbootował się plugin (Plugin#app w
+    // konstruktorze atrapy). Wtyczka-nosiciel dostaje TĘ SAMĄ instancję, dokładnie jak w
+    // prawdziwym Obsidianie (jeden `app` na cały workspace).
+    const app = plugin.app as FixturePayload;
 
-    // ── a) dokładnie 4 komendy, dokładnie te id ──
+    // ── migawka „przed" — obejmuje TAKŻE konstrukcję i onload() wtyczki-nosiciela ──
+    const before = snapshotTree(vaultRoot);
+
+    app.plugins.plugins[HOST_ID] = plugin;
+    const companion = new CompanionPlugin(app, COMPANION_MANIFEST);
+    companion.onload();
+
+    // ── a) dokładnie 4 komendy, dokładnie te id, na WTYCZCE-NOSICIELU (nie na pluginie) ──
+    const handlers = companion._registeredCliHandlers as Map<string, RegisteredCliHandler> | undefined;
+    assert(handlers instanceof Map, 'companion._registeredCliHandlers nie jest Mapą — registerCliHandler(atrapa) się nie wywołał albo zmienił kształt.');
     assert(
       handlers.size === 4,
       `Oczekiwano 4 zarejestrowanych komend CLI, jest ${handlers.size}: ${[...handlers.keys()].sort().join(', ') || '(brak)'}`,
@@ -144,15 +165,22 @@ export default ({
     const missing = EXPECTED_COMMAND_IDS.filter((id) => !handlers.has(id));
     assert(missing.length === 0, `Brakuje komend CLI: ${missing.join(', ')}. Zarejestrowane: ${[...handlers.keys()].sort().join(', ')}`);
 
-    // ── e) migawka „przed" — obejmuje WSZYSTKIE wywołania CLI tego scenariusza, poniżej ──
-    const before = snapshotTree(vaultRoot);
-
-    // ── b) status ──
+    // ── b) status — host obecny i gotowy ──
     const status = await callCli<StatusData>(handlers, CMD.status);
     assert(status.ok === true, `status: ok !== true — ${JSON.stringify(status)}`);
     if (!status.ok) return; // TS: zawęża status do wariantu ok:true poniżej
     assert(status.data.ready === true, `status.data.ready = ${status.data.ready}, oczekiwano true`);
-    assert(status.data.plugin.id === PLUGIN_ID, `status.data.plugin.id = "${status.data.plugin.id}", oczekiwano "${PLUGIN_ID}"`);
+    assert(status.data.plugin.id === HOST_ID, `status.data.plugin.id = "${status.data.plugin.id}", oczekiwano "${HOST_ID}"`);
+    assert(status.data.companion.id === COMPANION_ID, `status.data.companion.id = "${status.data.companion.id}", oczekiwano "${COMPANION_ID}"`);
+    assert(typeof status.data.plugin.instanceSince === 'string' && status.data.plugin.instanceSince.length > 0, `status.data.plugin.instanceSince powinien być znacznikiem ISO, jest: ${JSON.stringify(status.data.plugin.instanceSince)}`);
+    // K3: znacznik builda companiona + porównanie z bundlem hosta — pod harnessem (poza
+    // `build:companion`) builtAt/pluginCommit spadają na fallback "unknown" (`buildInfo.ts`),
+    // a bundleMtime na null (fixture nie ma prawdziwego <configDir>/plugins/pkm-assistant/main.js).
+    assert(typeof status.data.companion.builtAt === 'string' && status.data.companion.builtAt.length > 0, `status.data.companion.builtAt powinien być stringiem niepustym, jest: ${JSON.stringify(status.data.companion.builtAt)}`);
+    assert(typeof status.data.companion.pluginCommit === 'string' && status.data.companion.pluginCommit.length > 0, `status.data.companion.pluginCommit powinien być stringiem niepustym, jest: ${JSON.stringify(status.data.companion.pluginCommit)}`);
+    assert(typeof status.data.companion.pluginTreeDirty === 'boolean', `status.data.companion.pluginTreeDirty powinien być boolem, jest: ${JSON.stringify(status.data.companion.pluginTreeDirty)}`);
+    assert(status.data.plugin.bundleMtime === null || typeof status.data.plugin.bundleMtime === 'string', `status.data.plugin.bundleMtime powinien być stringiem albo null, jest: ${JSON.stringify(status.data.plugin.bundleMtime)}`);
+    assert(status.data.companionStale === null || typeof status.data.companionStale === 'boolean', `status.data.companionStale powinien być boolem albo null, jest: ${JSON.stringify(status.data.companionStale)}`);
     assert(!!status.data.agents, 'status.data.agents jest null — agentManager niedostępny mimo ready:true.');
     const agentNames = status.data.agents!.names;
     assert(agentNames.includes(FIXTURE_AGENT), `status.data.agents.names nie zawiera "${FIXTURE_AGENT}" (fixture): ${JSON.stringify(agentNames)}`);
@@ -221,16 +249,39 @@ export default ({
       );
     }
 
-    // ── selftest: wołany dla kompletu (dowód e obejmuje WSZYSTKIE 4 komendy), sanity-check ok:true ──
+    // ── selftest: wołany dla kompletu (dowód e obejmuje WSZYSTKIE komendy), sanity-check ok:true ──
     const selftest = await callCli<Record<string, unknown>>(handlers, CMD.selftest);
     assert(selftest.ok === true, `selftest: ok !== true — ${JSON.stringify(selftest).slice(0, 500)}`);
+
+    // ── f) host NIEOBECNY — status daje ready:false, pozostałe trzy komendy not_ready ──
+    delete app.plugins.plugins[HOST_ID];
+
+    const statusAbsent = await callCli<StatusData>(handlers, CMD.status);
+    assert(statusAbsent.ok === true, `status (host nieobecny): ok !== true — ${JSON.stringify(statusAbsent)}`);
+    if (!statusAbsent.ok) return;
+    assert(statusAbsent.data.ready === false, `status (host nieobecny): ready = ${statusAbsent.data.ready}, oczekiwano false`);
+    assert(statusAbsent.data.agents === null, `status (host nieobecny): agents = ${JSON.stringify(statusAbsent.data.agents)}, oczekiwano null`);
+    assert(statusAbsent.data.index === null, `status (host nieobecny): index = ${JSON.stringify(statusAbsent.data.index)}, oczekiwano null`);
+    assert(statusAbsent.data.plugin.version === 'unknown', `status (host nieobecny): plugin.version = "${statusAbsent.data.plugin.version}", oczekiwano "unknown"`);
+    assert(statusAbsent.data.plugin.instanceSince === null, `status (host nieobecny): instanceSince = ${JSON.stringify(statusAbsent.data.plugin.instanceSince)}, oczekiwano null`);
+
+    for (const [id, params] of [
+      [CMD.selftest, {}],
+      [CMD.agentPrompt, { agent: FIXTURE_AGENT }],
+      [CMD.memoryStatus, { agent: 'all' }],
+    ] as const) {
+      const response = await callCli<unknown>(handlers, id, params);
+      assert(response.ok === false, `${id} (host nieobecny): oczekiwano ok:false, jest ${JSON.stringify(response)}`);
+      if (response.ok) continue;
+      assert(response.error.code === 'not_ready', `${id} (host nieobecny): error.code = "${response.error.code}", oczekiwano "not_ready"`);
+    }
 
     // ── e) migawka „po" — MUSI wyjść identyczna migawce „przed" ──
     const after = snapshotTree(vaultRoot);
     const different = diffSnapshots(before, after);
     assert(
       different.length === 0,
-      `Cztery komendy CLI "tylko do odczytu" ZMIENIŁY coś na dysku vaulta: \n${different.join('\n')}`,
+      `Komendy CLI "tylko do odczytu" ZMIENIŁY coś na dysku vaulta: \n${different.join('\n')}`,
     );
 
     // ── tura modelu przeszła normalnie (wymóg runnera — patrz nagłówek pliku) ──

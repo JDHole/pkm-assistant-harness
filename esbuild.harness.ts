@@ -36,6 +36,8 @@ import { fileURLToPath } from 'node:url';
 import esbuild from 'esbuild';
 import type { Plugin } from 'esbuild';
 import { pluginRoot } from './lib/pluginRoot.ts';
+import { deployCompanion } from './lib/companionDeploy.ts';
+import { resolvePluginGitInfo } from './lib/pluginBuildInfo.ts';
 
 const HARNESS_DIR = path.dirname(fileURLToPath(import.meta.url));
 
@@ -127,6 +129,24 @@ function pluginTreePlugin(korzen: string): Plugin {
     };
 }
 
+/**
+ * Wariant `pluginTreePlugin` dla wtyczki-nosiciela (`companion/`, patrz `buildCompanion`
+ * niżej): TYLKO alias `@plugin/`, tak samo jak dla `run.js`/`scenarios.js` (te same źródła
+ * pluginu). `obsidian` NIE jest tu aliasowany na atrapę — `companion/` jest PRAWDZIWĄ wtyczką
+ * Obsidiana (CJS), a prawdziwy host dostarcza ten moduł sam w runtime; dlatego build companiona
+ * niżej dokłada `external: ['obsidian']`, dokładnie jak produkcyjny `esbuild.js` pluginu.
+ */
+function pluginAliasPlugin(korzen: string): Plugin {
+    return {
+        name: 'plugin-tree-companion',
+        setup(build) {
+            build.onResolve({ filter: /^@plugin\// }, args => ({
+                path: rozwiazWPluginie(korzen, args.path.slice(PREFIKS.length)),
+            }));
+        },
+    };
+}
+
 async function buildHarness(): Promise<void> {
     const korzenPluginu = pluginRoot();
     process.stdout.write(`[harness/build] plugin: ${korzenPluginu}\n`);
@@ -171,7 +191,81 @@ async function buildHarness(): Promise<void> {
     await writeFile(path.join(HARNESS_DIR, 'dist', 'package.json'), '{\n  "type": "module"\n}\n', 'utf8');
 }
 
-buildHarness().catch((err: unknown) => {
+/**
+ * Build wtyczki-nosiciela `companion/` -> `dist/companion/main.js` (`npm run build:companion`).
+ * WYWOŁANIE ODDZIELNE od `buildHarness()` (nie ten sam `entryPoints`): format i traktowanie
+ * `obsidian` są INNE - to prawdziwa wtyczka Obsidiana (CJS, `obsidian` zostaje POZA bundlem, bo
+ * host dostarcza go w runtime), nie node'owy skrypt harnessu (ESM, `obsidian` to LOKALNA
+ * atrapa). Alias `@plugin/` działa tak samo jak dla `run.js`/`scenarios.js` - te same źródła
+ * pluginu, `pluginRoot()` rozstrzyga je identycznie.
+ *
+ * Deploy do vaulta dewelopera jest WARUNKOWY (`deployCompanion`, `lib/companionDeploy.ts`):
+ * bez `companion/deploy.local.json` (ten build go NIE TWORZY) leci jedna linia "pominięty" i
+ * sukces - deploy jest wygodą, nie bramką tego builda.
+ */
+async function buildCompanion(): Promise<void> {
+    const korzenPluginu = pluginRoot();
+    const outdir = path.join(HARNESS_DIR, 'dist', 'companion');
+    process.stdout.write(`[harness/build] companion, plugin: ${korzenPluginu}\n`);
+
+    // Znacznik "z jakiego stanu repo pluginu zbudowano TĘ wtyczkę" (K3) - `companionStale` w
+    // `StatusData` (`companion/cli/commands.ts`) porównuje `builtAt` z mtime bundla pluginu w
+    // vaulcie, żeby ostrzec, gdy plugin poszedł do przodu, a wtyczka-nosiciel nie. Patrz
+    // `lib/pluginBuildInfo.ts` i `companion/buildInfo.ts` (odbiorca tych trzech stałych).
+    const builtAt = new Date().toISOString();
+    const pluginGitInfo = resolvePluginGitInfo(korzenPluginu);
+    process.stdout.write(
+        `[harness/build] companion znacznik: builtAt=${builtAt} pluginCommit=${pluginGitInfo.commit}`
+        + `${pluginGitInfo.dirty ? ' (drzewo pluginu BRUDNE)' : ''}\n`,
+    );
+
+    await esbuild.build({
+        entryPoints: { main: path.join(HARNESS_DIR, 'companion', 'main.ts') },
+        outdir,
+        bundle: true,
+        platform: 'node',
+        format: 'cjs',
+        target: 'es2022',
+        charset: 'utf8',
+        minify: false,
+        keepNames: true,
+        sourcemap: false,
+        logLevel: 'warning',
+        // Runtime hosta, nie paczka z npm - musi zostać POZA bundlem, inaczej wciągnęlibyśmy
+        // całego Obsidiana (dokładnie jak `external: ['obsidian']` w produkcyjnym `esbuild.js`
+        // pluginu).
+        external: ['obsidian'],
+        // Trzy stałe wkompilowane DOSŁOWNIE (nie import - `companion/buildInfo.ts` czyta je jako
+        // globalne identyfikatory przez `typeof` guard, patrz jego nagłówek). `JSON.stringify`
+        // dla stringów (literał w cudzysłowie), `String(...)` dla boola (goły token `true`/`false`,
+        // nie string "true"/"false" - `define` wstawia WARTOŚĆ ŹRÓDŁOWĄ, nie zserializowany JSON).
+        define: {
+            __COMPANION_BUILT_AT__: JSON.stringify(builtAt),
+            __COMPANION_PLUGIN_COMMIT__: JSON.stringify(pluginGitInfo.commit),
+            __COMPANION_PLUGIN_TREE_DIRTY__: String(pluginGitInfo.dirty),
+        },
+        plugins: [pluginAliasPlugin(korzenPluginu), cssImportPlugin, markdownImportPlugin],
+    });
+
+    fs.copyFileSync(
+        path.join(HARNESS_DIR, 'companion', 'manifest.json'),
+        path.join(outdir, 'manifest.json'),
+    );
+
+    const bundlePath = path.join(outdir, 'main.js');
+    const bytes = fs.statSync(bundlePath).size;
+    process.stdout.write(`[harness/build] companion gotowy: dist/companion/main.js (${bytes} B) + manifest.json\n`);
+
+    const deployResult = deployCompanion(outdir, path.join(HARNESS_DIR, 'companion', 'deploy.local.json'));
+    process.stdout.write(deployResult.deployed
+        ? `[harness/build] companion wdrożony do ${deployResult.target}\n`
+        : `[harness/build] companion deploy pominięty (${deployResult.reason})\n`);
+}
+
+const tryb = process.argv.includes('--companion') ? 'companion' : 'harness';
+const bieg = tryb === 'companion' ? buildCompanion() : buildHarness();
+
+bieg.catch((err: unknown) => {
     const message = err instanceof Error ? (err.stack ?? err.message) : String(err);
     process.stderr.write(`\n[harness/build] BLAD budowania bundla:\n${message}\n`);
     process.exit(1);

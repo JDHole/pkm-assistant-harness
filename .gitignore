@@ -6,5 +6,9 @@ dist
 .env.local
 .env
 
+# Deploy wtyczki-nosiciela (companion/) do vaulta dewelopera - ścieżka lokalna, nie sekret,
+# ale specyficzna dla jednej maszyny. Szablon: companion/deploy.local.example.json
+companion/deploy.local.json
+
 .DS_Store
 .vscode
