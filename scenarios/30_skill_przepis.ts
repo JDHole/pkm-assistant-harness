@@ -97,7 +97,7 @@ export default ({
       ].join('\n'),
     },
     {
-      // Slug unikalny — `ensureStarterSkills()` widzi niepusty katalog skilli i nie sieje 8 starterów.
+      // Slug unikalny — plugin nie sieje już żadnych fabrycznych skilli (patrz 46_boot_bez_starterow).
       path: SKILL_REL,
       content: [
         '---',
