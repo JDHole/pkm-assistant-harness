@@ -20,6 +20,7 @@ companion/
 ├── hostPlugin.ts             # resolveHost(app) - zwalidowany widok żywej instancji pkm-assistant; resolvePluginBundleMtime(app)
 ├── memoryStatus.ts           # getConsolidationStatus - status konsolidacji, przeniesiony z pluginu
 ├── buildInfo.ts               # K3: COMPANION_BUILT_AT/PLUGIN_COMMIT/PLUGIN_TREE_DIRTY - wstrzykiwane esbuild `define`, typeof-guard fallback
+├── obsidianContract.ts         # K5: plik tylko-typowy - obustronna przypisywalność typów CLI atrapy z prawdziwym obsidian.d.ts pluginu
 ├── logger.ts                 # lokalny logger (console.debug/warn) - NIE core/utils/Logger.js pluginu
 ├── deploy.local.example.json # szablon deploy.local.json (ten plik NIE jest gitignored)
 ├── CLAUDE.md                 # ten plik
@@ -185,6 +186,19 @@ wolno) importować całych klas jako wartości.
   LOKALNEJ atrapy** (`../../test-support/obsidian.js`, ścieżka względna), nie z bare `'obsidian'` -
   te dwa pliki nie potrzebują REALNEGO runtime'u Obsidiana (tylko typów), więc omijają problem
   wyżej w ogóle. Ten sam wzorzec, którym już chodzi `scenarios/47_cli_odczyt.ts`.
+- ⚠️ **Atrapa typów CLI kontra PRAWDZIWY `obsidian.d.ts` - pilnowane przez `obsidianContract.ts`
+  (K5, recenzja adwersaryjna).** Do tego pliku nic nie porównywało atrapy (`test-support/
+  obsidian.ts`) z prawdziwym Obsidianem - gdyby się rozjechały (Obsidian zmienia kształt
+  `CliFlag`, dokłada parametr do `registerCliHandler`), ten repo kompilowałby się i testował
+  dalej zielono, mimo że produkcyjna wtyczka w PRAWDZIWYM Obsidianie już by nie pasowała.
+  `obsidianContract.ts` jest plikiem TYLKO-TYPOWYM (zero kodu runtime): importuje `CliData`/
+  `CliFlag`/`CliFlags`/`CliHandler`/`Plugin` z `@plugin/node_modules/obsidian/obsidian.js`
+  (prawdziwy `obsidian.d.ts` REPO PLUGINU, przez istniejący alias `@plugin/` - `obsidian` nie
+  jest zależnością TEGO repo, ale `moduleResolution: "bundler"` w `tsconfig.json` rozwiązuje
+  specyfier `.js` na towarzyszący `.d.ts`, tak jak dla zwykłych plików `.ts` pluginu) i wymusza
+  OBUSTRONNĄ przypisywalność z odpowiadającymi typami atrapy, plus zgodność sygnatury
+  `registerCliHandler`. Naruszenie w KTÓRĄKOLWIEK stronę wywala `npm run typecheck` W TYM PLIKU
+  (`Type 'false' does not satisfy the constraint 'true'`), niezależnie od reszty repo.
 - ⚠️ **`AgentMemory` importuje się jako WARTOŚĆ pod `tsx`/AVA harnessu bez atrapy `obsidian`.**
   Zweryfikowane bezpośrednio przed napisaniem `memoryStatus.test.ts`: `AgentMemory.ts` i cały jej
   łańcuch importów w `modules/memory/` nie dotykają `obsidian` jako wartości (jedyny dotyk to
