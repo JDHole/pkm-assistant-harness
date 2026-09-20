@@ -36,6 +36,7 @@ import { fileURLToPath } from 'node:url';
 import esbuild from 'esbuild';
 import type { Plugin } from 'esbuild';
 import { pluginRoot } from './lib/pluginRoot.ts';
+import { deployCompanion } from './lib/companionDeploy.ts';
 
 const HARNESS_DIR = path.dirname(fileURLToPath(import.meta.url));
 
@@ -196,6 +197,10 @@ async function buildHarness(): Promise<void> {
  * host dostarcza go w runtime), nie node'owy skrypt harnessu (ESM, `obsidian` to LOKALNA
  * atrapa). Alias `@plugin/` działa tak samo jak dla `run.js`/`scenarios.js` - te same źródła
  * pluginu, `pluginRoot()` rozstrzyga je identycznie.
+ *
+ * Deploy do vaulta dewelopera jest WARUNKOWY (`deployCompanion`, `lib/companionDeploy.ts`):
+ * bez `companion/deploy.local.json` (ten build go NIE TWORZY) leci jedna linia "pominięty" i
+ * sukces - deploy jest wygodą, nie bramką tego builda.
  */
 async function buildCompanion(): Promise<void> {
     const korzenPluginu = pluginRoot();
@@ -229,6 +234,11 @@ async function buildCompanion(): Promise<void> {
     const bundlePath = path.join(outdir, 'main.js');
     const bytes = fs.statSync(bundlePath).size;
     process.stdout.write(`[harness/build] companion gotowy: dist/companion/main.js (${bytes} B) + manifest.json\n`);
+
+    const deployResult = deployCompanion(outdir, path.join(HARNESS_DIR, 'companion', 'deploy.local.json'));
+    process.stdout.write(deployResult.deployed
+        ? `[harness/build] companion wdrożony do ${deployResult.target}\n`
+        : `[harness/build] companion deploy pominięty (${deployResult.reason})\n`);
 }
 
 const tryb = process.argv.includes('--companion') ? 'companion' : 'harness';
