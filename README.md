@@ -94,9 +94,12 @@ Od 2026-09-20 (werdykt właściciela) narzędzia CLI Obsidiana (`status`/`selfte
 to narzędzie WEWNĘTRZNE, nie funkcja dla jego userów. Mieszka tu, w `companion/`, jako mała
 prywatna wtyczka Obsidiana (id `pkm-assistant-dev`), instalowana WYŁĄCZNIE w vaulcie właściciela.
 Przy KAŻDYM wywołaniu komendy rozwiązuje żywą instancję hosta `pkm-assistant` z
-`app.plugins.plugins` (`companion/hostPlugin.ts`) — nigdy nie trzyma referencji między
-wywołaniami, bo host bywa przeładowywany niezależnie od tej wtyczki. Pełny kontrakt komend,
-koperty i gotchas: `companion/CLAUDE.md`.
+`app.plugins.plugins` (`companion/hostPlugin.ts`) na nowo — nigdy nie cache'uje jej w polu klasy,
+bo host bywa przeładowywany niezależnie od tej wtyczki. Osobny tracker (`createInstanceTracker`
+w `cli/commands.ts`) pamięta OSTATNIO WIDZIANĄ instancję wyłącznie do porównania tożsamości
+(`instanceSince`) — jako SŁABĄ referencję (`WeakRef`), więc po zniknięciu hosta GC może
+posprzątać cały jego graf (AgentManager, indeks, pamięci agentów), zamiast trzymać go żywym w
+nieskończoność. Pełny kontrakt komend, koperty i gotchas: `companion/CLAUDE.md`.
 
 **Build i deploy:**
 

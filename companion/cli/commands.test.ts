@@ -1,5 +1,5 @@
 import test from 'ava';
-import { buildCliCommands } from './commands.js';
+import { buildCliCommands, createInstanceTracker } from './commands.js';
 
 import type { Agent } from '@plugin/modules/agents/index.js';
 import type { AgentMemory } from '@plugin/modules/memory/index.js';
@@ -253,6 +253,29 @@ test('status: wyjątek rzucony przez resolveHost() -> internal, handler nie rzuc
         effect: 'unchanged',
         error: { code: 'internal', message: 'resolveHost padł' },
     });
+});
+
+// ── K2: tracker trzyma SŁABĄ referencję (WeakRef), nie twardą ─────────────────────────────
+
+test('createInstanceTracker: nowa referencja hosta opakowana w (wstrzyknięty) WeakRef - tracker NIE trzyma jej wprost jako twardej referencji', t => {
+    const created: unknown[] = [];
+    class FakeWeakRef<T extends object> {
+        private readonly target: T;
+        constructor(target: T) {
+            created.push(target);
+            this.target = target;
+        }
+        deref(): T | undefined { return this.target; }
+    }
+    const hostA = { tag: 'A' };
+    const hostB = { tag: 'B' };
+    const track = createInstanceTracker(() => new Date('2026-09-20T00:00:00.000Z'), FakeWeakRef as unknown as typeof WeakRef);
+
+    track(hostA);
+    track(hostA); // ta sama referencja - NIE ma dostać drugiego opakowania
+    track(hostB);
+
+    t.deepEqual(created, [hostA, hostB], 'każda NOWA referencja hosta ma przejść przez (wstrzyknięty) WeakRef - dowód strukturalny, bez polegania na GC');
 });
 
 // ── P7: instanceSince - pamięć OSTATNIO WIDZIANEJ referencji hosta ────────────────────────

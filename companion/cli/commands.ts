@@ -302,16 +302,32 @@ async function runGuardedReady(
 //  Budowa danych per komenda
 // ═══════════════════════════════════════════════════════════════════════════════════════
 
-/** Pamięta OSTATNIO WIDZIANĄ żywą instancję hosta (porównanie tożsamości obiektu) i chwilę,
- *  gdy zobaczyła ją po raz pierwszy - nowa instancja po `plugin:reload id=pkm-assistant`
- *  (nowa referencja) dostaje nowy znacznik. Zamknięcie żyje tak długo jak rejestracja komend
- *  zwrócona przez `buildCliCommands` (czyli cały czas życia TEJ instancji wtyczki-nosiciela). */
-function createInstanceTracker(now: () => Date) {
-    let lastSeen: object | null = null;
+/**
+ * Pamięta OSTATNIO WIDZIANĄ żywą instancję hosta jako SŁABĄ referencję (`WeakRef`, porównanie
+ * tożsamości przez `deref()`) i chwilę, gdy zobaczyła ją po raz pierwszy - nowa instancja po
+ * `plugin:reload id=pkm-assistant` (nowa referencja) dostaje nowy znacznik. Zamknięcie żyje tak
+ * długo jak rejestracja komend zwrócona przez `buildCliCommands` (czyli cały czas życia TEJ
+ * instancji wtyczki-nosiciela) - GDYBY trzymała TWARDĄ referencję do `raw`, po
+ * `plugin:reload id=pkm-assistant` albo wyłączeniu hosta ta wtyczka (żyjąca DALEJ, niezależnie od
+ * niego) trzymałaby całą starą instancję - i cały jej graf (`AgentManager`, indeks, pamięci
+ * agentów) - przy życiu w nieskończoność, aż ktoś zawołałby `status` z nową referencją (K2,
+ * recenzja adwersaryjna). `WeakRef` pozwala GC posprzątać, gdy nikt inny już nie trzyma hosta;
+ * `deref()` zwraca `undefined` po posprzątaniu - traktowane jak "jeszcze nic nie widzieliśmy"
+ * (kolejne `raw` dostaje nowy znacznik). Semantyka identyczności BEZ zmian: ta sama żywa
+ * referencja -> ten sam znacznik, nowa -> nowy; brak hosta -> `null` (ta gałąź jest w
+ * `buildStatusData` - tracker nigdy nie jest wołany z `null`).
+ *
+ * `WeakRefCtor` wstrzykiwalny WYŁĄCZNIE do strukturalnej weryfikacji w testach (K2,
+ * `commands.test.ts`) - dowodzi, że przechowywanie idzie przez `WeakRef`, bez polegania na
+ * faktycznym GC (niedeterministyczne pod Node bez `--expose-gc`). Produkcja (`buildCliCommands`
+ * niżej) nigdy nie podaje tego argumentu - zawsze realny, globalny `WeakRef`.
+ */
+export function createInstanceTracker(now: () => Date, WeakRefCtor: typeof WeakRef = WeakRef) {
+    let lastSeenRef: WeakRef<object> | null = null;
     let since: string | null = null;
     return (raw: object): string => {
-        if (raw !== lastSeen) {
-            lastSeen = raw;
+        if (lastSeenRef?.deref() !== raw) {
+            lastSeenRef = new WeakRefCtor(raw);
             since = now().toISOString();
         }
         return since as string;
