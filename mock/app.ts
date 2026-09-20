@@ -240,7 +240,8 @@ export function createMockApp(vaultRoot: string): Runtime {
   function makeDetachedFile(p: Runtime): Runtime {
     const f = new TFile();
     f.path = normPath(p);
-    f.name = f.path.split('/').pop();
+    // `split` zawsze oddaje co najmniej jeden element, ale `pop()` jest typowane `string | undefined`.
+    f.name = f.path.split('/').pop() ?? f.path;
     const dot = f.name.lastIndexOf('.');
     f.extension = dot >= 0 ? f.name.slice(dot + 1) : '';
     f.basename = dot >= 0 ? f.name.slice(0, dot) : f.name;
@@ -250,7 +251,7 @@ export function createMockApp(vaultRoot: string): Runtime {
   function makeDetachedFolder(p: Runtime): Runtime {
     const f = new TFolder();
     f.path = normPath(p);
-    f.name = f.path.split('/').pop();
+    f.name = f.path.split('/').pop() ?? f.path;
     f.vault = vault;
     return f;
   }
