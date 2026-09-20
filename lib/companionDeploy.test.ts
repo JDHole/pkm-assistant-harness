@@ -52,10 +52,19 @@ test('deployCompanion: brak pliku config -> deployed:false, reason:no-config, ze
     fs.writeFileSync(path.join(dist, 'main.js'), 'console.log(1);');
     fs.writeFileSync(path.join(dist, 'manifest.json'), '{}');
     const missingConfig = path.join(dist, 'nie-istnieje.json');
+    const distBefore = fs.readdirSync(dist).sort();
+    // K6: nazwa testu obiecywała "zero zapisu", ale nic tego nie sprawdzało - katalog docelowy,
+    // jaki powstałby GDYBY config istniał (ta sama funkcja co w teście "config poprawny" niżej,
+    // inny tymczasowy vault) MA pozostać nieutworzony, skoro deployCompanion nigdy nie doszedł
+    // do jego wyliczenia (zwraca się wcześniej, na braku pliku config).
+    const wouldBeVault = tempDir('vault-no-config');
+    const wouldBeTarget = companionDeployDir({ vault: wouldBeVault, configDir: '.obsidian' });
 
     const result = deployCompanion(dist, missingConfig);
 
     t.deepEqual(result, { deployed: false, reason: 'no-config' });
+    t.deepEqual(fs.readdirSync(dist).sort(), distBefore, 'brak configu -> zero nowych plików w katalogu źródłowym (dist)');
+    t.false(fs.existsSync(wouldBeTarget), 'katalog docelowy (plugins/pkm-assistant-dev) nie ma prawa powstać bez configu');
 });
 
 test('deployCompanion: config z bad JSON -> deployed:false, reason zawiera bad-json', t => {

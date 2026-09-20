@@ -18,8 +18,11 @@ companion/
 ├── manifest.json            # id "pkm-assistant-dev", minAppVersion 1.12.2, isDesktopOnly
 ├── main.ts                  # klasa wtyczki (extends Plugin) - onload() rejestruje komendy
 ├── hostPlugin.ts             # resolveHost(app) - zwalidowany widok żywej instancji pkm-assistant; resolvePluginBundleMtime(app)
+├── hostPlugin.test.ts
 ├── memoryStatus.ts           # getConsolidationStatus - status konsolidacji, przeniesiony z pluginu
+├── memoryStatus.test.ts
 ├── buildInfo.ts               # K3: COMPANION_BUILT_AT/PLUGIN_COMMIT/PLUGIN_TREE_DIRTY - wstrzykiwane esbuild `define`, typeof-guard fallback
+├── buildInfo.test.ts
 ├── obsidianContract.ts         # K5: plik tylko-typowy - obustronna przypisywalność typów CLI atrapy z prawdziwym obsidian.d.ts pluginu
 ├── logger.ts                 # lokalny logger (console.debug/warn) - NIE core/utils/Logger.js pluginu
 ├── deploy.local.example.json # szablon deploy.local.json (ten plik NIE jest gitignored)
@@ -32,6 +35,10 @@ companion/
     ├── commands.test.ts
     └── register.test.ts
 ```
+
+Poza `companion/` (ale ściśle powiązane, patrz sekcja "Powiązane" niżej): `lib/pluginBuildInfo.ts`
++ `.test.ts` (K3 - `resolvePluginGitInfo`, wołane z `esbuild.harness.ts`), `lib/companionDeploy.ts`
++ `.test.ts` (deploy do vaulta), `scenarios/47_cli_odczyt.ts` (end-to-end).
 
 Deploy do vaulta (`lib/companionDeploy.ts`, w tym repo poza `companion/`, bo to build-time
 infrastruktura harnessu, nie runtime wtyczki) i entry esbuilda (`esbuild.harness.ts` ->
@@ -97,8 +104,8 @@ porównanie tożsamości przez `deref()`, w zamknięciu `buildCliCommands` - pat
 `createInstanceTracker` w `cli/commands.ts`) i chwilę, gdy zobaczyła ją PIERWSZY RAZ. Ta sama
 referencja między wywołaniami -> ten sam znacznik; nowa instancja hosta (po
 `plugin:reload id=pkm-assistant`) -> nowy znacznik. `WeakRef`, NIE twarda referencja: po
-zniknięciu hosta ta wtyczka (żyjąca dalej niezależnie od niego) nie ma prawa trzymać całą jego
-graf (AgentManager, indeks, pamięci agentów) przy życiu w nieskończoność - GC może posprzątać, gdy
+zniknięciu hosta ta wtyczka (żyjąca dalej niezależnie od niego) nie ma prawa trzymać całego jego
+grafu (AgentManager, indeks, pamięci agentów) przy życiu w nieskończoność - GC może posprzątać, gdy
 nikt inny już nie trzyma hosta. Hosta nie ma -> `instanceSince: null`, `plugin.version: 'unknown'`.
 
 `plugin.bundleMtime` to ISO mtime pliku `<configDir>/plugins/pkm-assistant/main.js` w vaulcie
@@ -156,7 +163,7 @@ wolno) importować całych klas jako wartości.
   nie plik pomocniczy). Import runtime'owy stąd wciągnąłby całą Oramę do tej małej wtyczki -
   pominięty świadomie. `buildSelfTestReport` jest na to przygotowany (`sectionSemantics` sprawdza
   `typeof deps.countDocs === 'function'` przed użyciem) - sekcja "Semantics" w raporcie selftestu
-  woła po prostu pokazuje `doc_count: 'n/a'` zamiast realnej liczby, reszta sekcji (status
+  po prostu pokazuje `doc_count: 'n/a'` zamiast realnej liczby, reszta sekcji (status
   indeksera, `oramaDb: present/absent`) działa normalnie.
 - **`fileLogActive`** (czy plikowy sink Loggera hosta jest aktywny) - żyje jako właściwość
   `log.fileSinkActive` na singletonie `core/utils/Logger.js` pluginu. Ta wtyczka jest OSOBNYM
@@ -166,6 +173,14 @@ wolno) importować całych klas jako wartości.
   brak pola (fałszywe `false` sugerowałoby "log wyłączony", gdy w rzeczywistości jest włączony).
   Sekcja "File log" w raporcie selftestu przez to zawsze pokazuje `sink: inactive` - znana,
   zaakceptowana nieścisłość, udokumentowana tu i w `main.ts`.
+  **Wprost: `pkm-assistant-dev:selftest` ma TRWALE o jeden `warn` więcej niż self-test klikany
+  bezpośrednio w Obsidianie** - `core/selftest.ts` (`sectionFileLog`) liczy `enabled` z ustawień
+  hosta (domyślnie `true`, `fileLogEnabled !== false`) niezależnie od tego, kto woła, ale `active`
+  WYŁĄCZNIE z `deps.fileLogActive`, którego ta wtyczka nigdy nie podaje (patrz wyżej) - kombinacja
+  `enabled:true, active:false` to zawsze `WARN` ("Enabled in settings but sink not active."), NAWET
+  gdy sink hosta naprawdę pisze na dysk. To NIE jest regresja pluginu ani fałszywy alarm do
+  ścigania - to znany, trwały artefakt tego, że `companion/` czyta stan hosta z zewnątrz, osobnym
+  bundlem, bez dostępu do jego żywego singletona Loggera.
 
 ## Gotchas
 

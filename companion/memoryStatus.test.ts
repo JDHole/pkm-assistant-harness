@@ -327,8 +327,14 @@ test('getConsolidationStatus na ZIMNEJ instancji: bootstrap struktury odpala si�
 
     const mkdirPaths = calls.filter(c => c.startsWith('mkdir:')).map(c => c.slice('mkdir:'.length));
     const uniqueMkdirPaths = new Set(mkdirPaths);
-    t.is(mkdirPaths.length, 11, `bootstrap zimnej instancji zakłada 11 folderów: ${JSON.stringify(mkdirPaths)}`);
-    t.is(uniqueMkdirPaths.size, 11, `każdy folder zakładany DOKŁADNIE raz, nie dwa razy równolegle: ${JSON.stringify(mkdirPaths)}`);
+    // K6: literalne "11" pinowało stałą z bebechów pluginu (liczba folderów, jakie dziś zakłada
+    // AgentMemory.ensureMemoryStructure() - szczegół WEWNĘTRZNY tamtego modułu, nie kontrakt tej
+    // wtyczki). Test tej wtyczki ma sprawdzać SWOJE zachowanie: zimna instancja REALNIE
+    // bootstrapuje (co najmniej jeden mkdir - inaczej test przeszedłby też, gdyby
+    // getConsolidationStatus przestał w ogóle dotykać zimnej instancji), i że żaden folder nie
+    // jest zakładany dwa razy równolegle (unikalność) - bez założeń o KONKRETNEJ liczbie.
+    t.true(mkdirPaths.length > 0, `zimna instancja ma bootstrapować przynajmniej jeden folder: ${JSON.stringify(mkdirPaths)}`);
+    t.is(uniqueMkdirPaths.size, mkdirPaths.length, `każdy folder zakładany DOKŁADNIE raz, nie dwa razy równolegle: ${JSON.stringify(mkdirPaths)}`);
 });
 
 // ── exists() kłamiące false na brain/ ──────────────────────────────────────────────────

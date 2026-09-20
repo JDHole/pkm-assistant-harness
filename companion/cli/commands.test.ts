@@ -362,16 +362,22 @@ test('status: instanceSince - TA SAMA referencja hosta między wywołaniami nie 
     t.is(r3.data.plugin.instanceSince, d2.toISOString(), 'nowa referencja (np. po plugin:reload id=pkm-assistant) -> nowy znacznik');
 });
 
-test('status: instanceSince - hosta ZNIKA i WRACA (nowa referencja) -> null pomiędzy, nowy znacznik po powrocie', async t => {
+test('status: instanceSince - hosta ZNIKA i WRACA jako TA SAMA referencja -> null pomiędzy, TEN SAM (nie nowy) znacznik po powrocie', async t => {
+    // K6: nazwa tego testu mówiła "nowa referencja" - `hostRaw` niżej jest JEDNYM obiektem,
+    // używanym przy r1 I r3 (nigdy nie podmienianym) - test naprawdę sprawdza, że zniknięcie
+    // hosta NIE kasuje pamięci trackera dla tej samej referencji, gdy wraca.
     const hostRaw: Record<string, unknown> = {};
     const am = makeAgentManager({ names: ['Jaskier'] });
     const d1 = new Date('2026-09-20T00:00:00.000Z');
-    const d2 = new Date('2026-09-20T02:00:00.000Z');
     let hostPresent = true;
 
     const deps = makeDeps({
         host: () => (hostPresent ? makeHost({ raw: hostRaw, agentManager: am }) : null),
-        nowSequence: [d1, d2],
+        // Jeden element: `now()` jest wołane TYLKO raz (przy r1 - pierwsze zobaczenie `hostRaw`).
+        // r2 nie woła trackera w ogóle (host nieobecny), r3 widzi TĘ SAMĄ referencję co r1, więc
+        // dostaje zapamiętany znacznik bez kolejnego wywołania `now()` - drugi element sekwencji
+        // nigdy nie zostałby skonsumowany.
+        nowSequence: [d1],
     });
     const commands = buildCliCommands(deps);
     const statusSpec = commands.find(c => c.id === 'pkm-assistant-dev:status');
