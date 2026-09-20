@@ -2,6 +2,41 @@
 import argparse,hashlib,json,os,secrets,shutil,socket,time,re
 from pathlib import Path
 
+def patch_home_cleanup(raw):
+    """Move only the two known cleanup calls; preserve unrelated Home edits and bytes."""
+    text=raw.decode('utf-8')
+    stop='if (siatkaPulpitu) { try { siatkaPulpitu.stop(); } catch (_) { /* nic */ } siatkaPulpitu = null; }'
+    cleanup='WU.sprzataj(contentContainer);'
+    # Known lifecycle blocks only. Same-indentation closing braces delimit each
+    # block; unfamiliar formatting/structure is deliberately a manual merge.
+    for header in ('async function refreshContent() {','stop: () => {'):
+        blocks=list(re.finditer(r'(?m)^(?P<i>[ \t]*)'+re.escape(header)+r'\r?\n(?P<body>[\s\S]*?)^(?P=i)}\r?$',text))
+        if len(blocks) != 1 or blocks[0]['body'].count(stop) != 1 or blocks[0]['body'].count(cleanup) != 1:
+            raise ValueError('Home lifecycle scope changed: merge monitor cleanup manually')
+    if len(re.findall(r'(?m)^\s*'+re.escape(stop)+r'\s*$',text)) != 2 or len(re.findall(r'(?m)^\s*'+re.escape(cleanup)+r'\s*$',text)) != 2:
+        raise ValueError('Home lifecycle changed: merge monitor cleanup manually')
+    old=re.compile(r'(?m)^(?P<i>[ \t]+)'+re.escape(stop)+r'(?P<nl>\r?\n)(?P<comments>(?:(?P=i)//[^\r\n]*(?P=nl))*)(?P=i)'+re.escape(cleanup)+r'(?P=nl)')
+    already=re.compile(r'(?m)^(?P<i>[ \t]+)'+re.escape(cleanup)+r'(?P<nl>\r?\n)(?:(?P=i)//[^\r\n]*(?P=nl))*(?P=i)'+re.escape(stop)+r'(?=\r?$)')
+    existing=len(list(already.finditer(text)))
+    text,changed=old.subn(lambda m:m['i']+cleanup+m['nl']+m['i']+stop+m['nl']+m['comments'],text)
+    if existing+changed != 2:raise ValueError('Home lifecycle ambiguous: merge monitor cleanup manually')
+    return text.encode('utf-8')
+
+def prepare_home_updates(vault,src):
+    """Preflight the whole Home change before any deployment mutation."""
+    hashes=json.loads((src/'home/baseline-hashes.json').read_text(encoding='utf-8'))
+    updates=[]
+    for name in ('pulpit_core.js','pulpit_kafle.js'):
+        target=vault/'99_System/Scripts/components/home'/name
+        before=target.read_bytes();after=(src/'home'/name).read_bytes()
+        if before != after and hashlib.sha256(before).hexdigest() != hashes.get(name):
+            raise ValueError('Home component changed: merge '+name+' before deployment')
+        updates.append((target,before,after,'home/'+name))
+    target=vault/'99_System/Scripts/views/widgetHome.js'
+    before=target.read_bytes()
+    updates.append((target,before,patch_home_cleanup(before),'home/widgetHome.js'))
+    return updates
+
 def register_notifications():
     if os.name != 'nt':return
     import winreg
@@ -17,7 +52,7 @@ def install(vault, destination, codex, claude, pythonw):
         raise ValueError('Private runtime must stay outside vault and source repository')
     if not (vault/'.obsidian/plugins/most-status/manifest.json').is_file():raise ValueError('Expected existing Most Status vault')
     required=['monitor.py','core.py','collectors.py','notifier.py','zoneinfo/Europe/Berlin',
-        'build/main.js','ui/styles.css','ui/manifest.json','ui/monitor_core.js','home/pulpit_core.js','home/pulpit_kafle.js','home/widgetHome.js']
+        'build/main.js','ui/styles.css','ui/manifest.json','ui/monitor_core.js','home/pulpit_core.js','home/pulpit_kafle.js','home/baseline-hashes.json']
     if any(not (src/name).is_file() for name in required):raise ValueError('Deployment sources incomplete')
     for exe in (codex,claude,pythonw):
         if not Path(exe).is_file():raise ValueError('Missing runtime executable')
@@ -25,6 +60,7 @@ def install(vault, destination, codex, claude, pythonw):
     config=json.loads(config_path.read_text(encoding='utf-8')) if config_path.exists() else {'identitySalt':secrets.token_hex(32)}
     if not isinstance(config,dict) or not isinstance(config.get('identitySalt'),str) or not re.fullmatch(r'[0-9a-fA-F]{64}',config['identitySalt']):
         raise ValueError('Existing config needs a valid private identitySalt')
+    home_updates=prepare_home_updates(vault,src)
     vendor=dest/'vendor'/'claude-2.1.278.exe'
     config.update(dataDir=str(dest/'state'),snapshotPath=str(vault/'99_System/State/subscription-usage.json'),
         codexPath=str(Path(codex).resolve()),claudePath=str(vendor),port=1236)
@@ -53,9 +89,12 @@ def install(vault, destination, codex, claude, pythonw):
     copy(src/'build/main.js',vault/'.obsidian/plugins/most-status/main.js','plugin/main.js')
     for name in ('styles.css','manifest.json','monitor_core.js'):
         copy(src/'ui'/name,vault/'.obsidian/plugins/most-status'/name,'plugin/'+name)
-    for name in ('pulpit_core.js','pulpit_kafle.js'):
-        copy(src/'home'/name,vault/'99_System/Scripts/components/home'/name,'home/'+name)
-    copy(src/'home/widgetHome.js',vault/'99_System/Scripts/views/widgetHome.js','home/widgetHome.js')
+    for target,before,after,label in home_updates:
+        if target.read_bytes() != before:raise ValueError('Home changed during deployment; preserving '+str(target))
+        if before != after:
+            old=backup/label;old.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(target,old)
+            target.write_bytes(after)
+        manifest.append({'path':str(target),'sha256':hashlib.sha256(after).hexdigest()})
     startup=Path(os.environ['APPDATA'])/'Microsoft/Windows/Start Menu/Programs/Startup/Most-Monitor.vbs'
     command='"'+str(Path(pythonw).resolve())+'" "'+str(dest/'monitor.py')+'" serve'
     vbs='Set shell = CreateObject("WScript.Shell")\nshell.Run "'+command.replace('"','""')+'", 0, False\n'

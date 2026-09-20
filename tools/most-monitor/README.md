@@ -30,6 +30,8 @@ Run `node build_ui.cjs` first. This bundles the UI into one CommonJS file with O
 
 The installer registers the local notification identity `JDHole.MostMonitor`. It does not change Windows notification preferences. If Windows returns `DisabledForUser`, the panel reports the block and retains alerts; global notification settings require the user's decision.
 
+Home deployment preserves concurrent work. The installer patches only two cleanup call positions in the current `widgetHome.js`; the checked-in full file is a review fixture, never copied. Unknown lifecycle structure fails preflight. The two Pulpit components must match their recorded pre-monitor baseline or the desired version, otherwise deployment stops before any mutation and requires a merge. A second byte comparison immediately before writing detects changes made after preflight. An already integrated Home requires zero writes.
+
 `legacy/most.py` contains the existing private Most with three localized changes: automatic usage ping disabled by default, explicit `MOST_ALLOW_LEGACY_USAGE_PING=1` compatibility opt-in, and tray refresh calling the read-only monitor. Backend health still uses GET `/v1/models`. Applying that file and restarting the idle bridge is a separate explicit deployment step.
 
 Tests: `python -m unittest discover -v`, `node --test ui/monitor_core.test.js home/pulpit_core.test.js`. Legacy integration tests use Python with the existing aiohttp dependency, fake backend, ports 1244/1245 and a separate base directory; never run them against the live bridge. Private UI files are CommonJS and have their own package boundary.
