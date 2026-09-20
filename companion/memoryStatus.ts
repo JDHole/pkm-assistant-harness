@@ -100,6 +100,59 @@ function defaultState(): MemoryState {
     };
 }
 
+/** `typeof === 'object'`, nie `null`, nie tablica - "obiekt" w sensie `.state.json` (K4:
+ *  `JSON.parse` na tablicy `[1,2]` też przechodzi jako `typeof 'object'`, ale to NIE jest kształt
+ *  stanu, więc liczy się jako nieczytelny, tak samo jak zepsuty JSON). */
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Zawęża wynik `JSON.parse(...)` do `Partial<MemoryState>` NA GRANICY (K4, recenzja
+ * adwersaryjna) - poprzedni `JSON.parse(...) as Partial<MemoryState>` był castem NA WIARĘ, bez
+ * sprawdzenia kształtu: `.state.json` z `"active_sessions": "abc"` dawało `stateActive` liczone
+ * jako `.length` STRINGU (3, nie 0), `"active_sessions": {...}` dawało `.length` `undefined`, a
+ * `"last_archive_at": 42` przechodziło jako liczba tam, gdzie kod (i CLI) obiecuje `string | null`.
+ *
+ * Trzy pola, każde osobno, "zły kształt -> tak jakby pole nie przyszło" (nie rzuca, nie wywraca
+ * reszty stanu):
+ *  - `active_sessions` -> tablica SAMYCH stringów, inaczej `[]` (częściowa tablica - jeden zły
+ *    element - też `[]`, nie "przefiltrowana reszta": ma być tablica stringów albo nic);
+ *  - `archived_since_last_consolidation` -> skończona liczba (`typeof 'number'`, `Number.isFinite`),
+ *    inaczej `0`;
+ *  - `last_archive_at` -> string, inaczej `null`.
+ *
+ * `brain_notes_limit` NIE jest tu walidowane liczbowo - `resolveConsolidationThresholds` (plugin)
+ * sama robi `Number(state?.brain_notes_limit) || fallback` na granicy WŁASNEGO modułu (jedno
+ * liczydło, nie kopiować). Tu tylko filtr kształtu: przepuszczony jest TYLKO `number`/`string`
+ * (to, co `Number(...)` sensownie koerguje), każdy inny kształt (obiekt, tablica, bool) - pole
+ * pominięte całkiem, więc `resolveConsolidationThresholds` widzi `undefined` i spada na default.
+ *
+ * Wynik parsowania, który w ogóle NIE jest obiektem (np. `[1,2]`, `"tekst"`, `42`, `null`) -
+ * `null` stąd, co wołacz (`peekState`) traktuje identycznie jak zepsuty JSON -> `source:'unreadable'`.
+ */
+function normalizeParsedState(parsed: unknown): Partial<MemoryState> | null {
+    if (!isPlainObject(parsed)) return null;
+
+    const result: Partial<MemoryState> = {};
+
+    result.active_sessions = Array.isArray(parsed.active_sessions) && parsed.active_sessions.every(item => typeof item === 'string')
+        ? parsed.active_sessions as string[]
+        : [];
+
+    result.archived_since_last_consolidation = typeof parsed.archived_since_last_consolidation === 'number' && Number.isFinite(parsed.archived_since_last_consolidation)
+        ? parsed.archived_since_last_consolidation
+        : 0;
+
+    result.last_archive_at = typeof parsed.last_archive_at === 'string' ? parsed.last_archive_at : null;
+
+    if (typeof parsed.brain_notes_limit === 'number' || typeof parsed.brain_notes_limit === 'string') {
+        result.brain_notes_limit = parsed.brain_notes_limit;
+    }
+
+    return result;
+}
+
 /**
  * Odpowiednik `StateManager.peek()`, BEZ importu tamtej klasy (metoda znika z pluginu - żyła
  * tam wyłącznie dla tego jednego wołacza). Zero zapisu, zero bootstrapu.
@@ -128,11 +181,16 @@ async function peekState(agentMemory: StateFsView): Promise<{ state: MemoryState
         return { state: defaultState(), source: exists ? 'unreadable' : 'missing' };
     }
 
+    let parsed: unknown;
     try {
-        return { state: { ...defaultState(), ...(JSON.parse(raw || '{}') as Partial<MemoryState>) }, source: 'file' };
+        parsed = JSON.parse(raw || '{}');
     } catch {
         return { state: defaultState(), source: 'unreadable' };
     }
+
+    const normalized = normalizeParsedState(parsed);
+    if (normalized === null) return { state: defaultState(), source: 'unreadable' };
+    return { state: { ...defaultState(), ...normalized }, source: 'file' };
 }
 
 /**

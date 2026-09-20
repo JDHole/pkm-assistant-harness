@@ -364,6 +364,106 @@ test('getConsolidationStatus: .state.json z "active_sessions": null (poprawny JS
     t.is(status.sessions.archivedSinceLastConsolidation, 3);
 });
 
+// ── K4: peekState zawęża trzy pola PO JSON.parse - `JSON.parse(...) as Partial<MemoryState>`
+//    na wiarę przepuszczało zły kształt prosto do liczników ────────────────────────────────
+
+test('getConsolidationStatus: .state.json z "active_sessions" jako OBIEKTEM (nie tablicą) -> stateActive=0', async t => {
+    const { vault, files } = makeVault();
+    const memory = new AgentMemory(vault, 'Agent');
+    await memory.initialize();
+    files[`${BASE}/.state.json`] = '{"active_sessions": {"a": 1}}';
+
+    const status = await getConsolidationStatus(memory);
+
+    t.is(status.state.source, 'file');
+    t.is(status.sessions.stateActive, 0);
+});
+
+test('getConsolidationStatus: .state.json z "active_sessions" jako STRINGIEM -> stateActive=0 (nie .length stringu)', async t => {
+    const { vault, files } = makeVault();
+    const memory = new AgentMemory(vault, 'Agent');
+    await memory.initialize();
+    files[`${BASE}/.state.json`] = '{"active_sessions": "abc"}';
+
+    const status = await getConsolidationStatus(memory);
+
+    t.is(status.state.source, 'file');
+    t.is(status.sessions.stateActive, 0);
+});
+
+test('getConsolidationStatus: .state.json z "active_sessions" jako tablicą MIESZANĄ (string + liczba) -> stateActive=0, nie połowiczna tablica', async t => {
+    const { vault, files } = makeVault();
+    const memory = new AgentMemory(vault, 'Agent');
+    await memory.initialize();
+    files[`${BASE}/.state.json`] = '{"active_sessions": ["a.md", 42]}';
+
+    const status = await getConsolidationStatus(memory);
+
+    t.is(status.sessions.stateActive, 0);
+});
+
+test('getConsolidationStatus: .state.json z "last_archive_at" jako LICZBĄ (nie stringiem) -> lastArchiveAt=null', async t => {
+    const { vault, files } = makeVault();
+    const memory = new AgentMemory(vault, 'Agent');
+    await memory.initialize();
+    files[`${BASE}/.state.json`] = '{"last_archive_at": 42}';
+
+    const status = await getConsolidationStatus(memory);
+
+    t.is(status.state.source, 'file');
+    t.is(status.state.lastArchiveAt, null);
+});
+
+test('getConsolidationStatus: .state.json z "archived_since_last_consolidation" jako STRINGIEM -> liczony jak 0, nie rzuca', async t => {
+    const { vault, files } = makeVault();
+    const memory = new AgentMemory(vault, 'Agent');
+    await memory.initialize();
+    files[`${BASE}/.state.json`] = '{"archived_since_last_consolidation": "5"}';
+
+    const status = await getConsolidationStatus(memory);
+
+    t.is(status.state.source, 'file');
+    t.is(status.sessions.archivedSinceLastConsolidation, 0);
+});
+
+test('getConsolidationStatus: .state.json to TABLICA, nie obiekt ([1,2]) -> source=unreadable, liczniki na defaultach', async t => {
+    const { vault, files } = makeVault();
+    const memory = new AgentMemory(vault, 'Agent');
+    await memory.initialize();
+    files[`${BASE}/.state.json`] = '[1,2]';
+
+    const status = await getConsolidationStatus(memory);
+
+    t.is(status.state.source, 'unreadable');
+    t.is(status.sessions.stateActive, 0);
+    t.is(status.sessions.archivedSinceLastConsolidation, 0);
+    t.is(status.state.lastArchiveAt, null);
+});
+
+test('getConsolidationStatus: .state.json z brain_notes_limit jako OBIEKTEM -> pole odrzucone, próg spada na domyślne 20', async t => {
+    const { vault, files } = makeVault();
+    const memory = new AgentMemory(vault, 'Agent');
+    await memory.initialize();
+    files[`${BASE}/.state.json`] = '{"brain_notes_limit": {"nope": true}}';
+
+    const status = await getConsolidationStatus(memory);
+
+    t.is(status.brainNotes.limit, 20);
+    t.is(status.brainNotes.limitSource, 'default');
+});
+
+test('getConsolidationStatus: .state.json z brain_notes_limit jako LICZBĄ -> przechodzi bez zmian do progu (limitSource=agent_state)', async t => {
+    const { vault, files } = makeVault();
+    const memory = new AgentMemory(vault, 'Agent');
+    await memory.initialize();
+    files[`${BASE}/.state.json`] = '{"brain_notes_limit": 25}';
+
+    const status = await getConsolidationStatus(memory);
+
+    t.is(status.brainNotes.limit, 25);
+    t.is(status.brainNotes.limitSource, 'agent_state');
+});
+
 // ── resolvePlanDedupThreshold - formuła produkcyjnego `consolidationRunner.startConsolidationRun`,
 //    CELOWO inna niż `resolveConsolidationThresholds` pluginu (brak fallbacku na archiveBrainNotesThreshold). ──
 
