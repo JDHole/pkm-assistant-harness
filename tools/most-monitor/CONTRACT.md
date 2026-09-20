@@ -1,0 +1,23 @@
+# Most Monitor v1
+
+Private local tool. Python stdlib; no model calls, credential copies, API spend or runtime/model switches.
+
+`collectors.collect_codex(config)` and `collectors.collect_claude(config)` each return one account dict, including on errors. They are bounded to 40 seconds. Config is local JSON with `codexPath`, `claudePath`, `dataDir`, `snapshotPath`, `port` (1236), `pollSeconds` (300), `notifications` (true).
+
+Times are UTC Unix seconds. Numbers must be finite; null is not zero. All text is data, never HTML. No email/raw ID/token output.
+
+Account: `{provider: 'codex'|'claude', accountRef: string, label: string, authMode: 'subscription'|'unknown', status: 'fresh'|'stale'|'unknown'|'error'|'auth_required'|'unsupported', reason: string|null, source: string, observedAt: number|null, receivedAt: number, validUntil: number|null, coverage: string[], windows: Window[], plan: string|null}`.
+
+Window: `{poolId: string, windowId: string, label: string, scope: object, windowKind: 'fixed'|'rolling'|'unknown', windowMinutes: number|null, metricKind: 'usage_percent', unit: 'percent', value: number|null, usedPercent: number|null, resetsAt: number|null}`. Scope preserved, model restrictions separate. Stable windowId independent of reset. Epoch reset normalized to whole minute to absorb provider timestamp jitter. No invented short window if missing/zero duration. Unknown scope is retained, never presumed equivalent to a model name. Codex coverage explicitly excludes ordinary ChatGPT chat limits.
+
+Snapshot: `{schemaVersion:1, snapshotId:string, hostId:string, collectorVersion:'1.0.0', receivedAt:number, validUntil:number|null, status:string, accounts: Account[], alerts: Alert[], notificationStatus: string}`. Core adds `daily: [{poolId,windowId,scope,date,epoch,baselineAt,deltaPp,partial:true,hasGap:boolean}]` to each account. This is observed change since first comparable sample of the local day (Europe/Berlin), not reconstructed midnight use. Only weekly windows (10080 minutes), same identity/plan/reset; a decrease starts new segment, never accumulates positive steps. Persistent daily/window alerts with highest threshold only on first high sample (70/85/95), daily >=30pp. No repeats after restart. No thresholds from stale/error input. Unknown reset: persist epoch until confirmed reset/decrease; do not make one per fetch. A gap >10min sets hasGap and keeps honest measured endpoint delta.
+
+API (127.0.0.1 only): `GET /most/v1/usage?maxAge=300` (optional `provider`, `accountRef`, `hostId` filters; host mismatch fails), `GET /most/v1/history?limit=200` and `GET /most/v1/routing-status` (recommend_model unsupported, usage_status available). Header `X-Most-Client: local-v1` required for all reads, reject any Origin and non-loopback Host; no CORS. `POST /most/v1/refresh` same guard, no settings mutations. Clamp inputs. API is local same-user telemetry, header protects against browser cross-origin access, not malicious local processes.
+
+Five simultaneous usage requests with maxAge=60 share one refresh (singleflight); interval 300s with jitter, bounded backoff on failures. Accounts collected independently so one failing provider does not erase the other. Failed read preserves old observation time and last known windows, but marks error/stale and cannot appear fresh. Before a relevant window reset or after validUntil it is stale even while daemon stopped. Core materializes status on every read. Store DB outside vault, one service instance enforced by port bind before starting collectors. Atomic sanitized snapshot export after refresh.
+
+CLI `python monitor.py usage_status --max-age 60` emits same JSON as API, works without Obsidian; default config beside monitor.py. `serve --config PATH` runs process. No CLI collection fallback when service offline, return explicit unavailable. `history` and `routing_status` support JSON. Help documents agent path. No require users to run terminal.
+
+Windows notifications originate in daemon, not UI, persist dedup. `notifier.notify(alert)` receives allowlisted alert, returns bool. Root supplies this module. Failures shown in notificationStatus; no fake delivery claim. Keep recent alerts on panel regardless of toast success. Alert has id,kind,provider,accountRef,poolId,windowId,scope,threshold,value,createdAt,message.
+
+Tests use fixtures/temp dirs/fake collectors/ports only. No live ECO toggles/restarts/model calls. UI shows freshness, model scopes, actual durations/resets, daily 30pp and recent alerts, plus existing Most controls. Home consumes plugin's in-memory snapshot and opens panel. Same snapshotId for all readers until new refresh. Stage4 recommendation and stage5 runner deliberately absent.
