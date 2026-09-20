@@ -29,7 +29,8 @@ import { okResponse, errorResponse, serializeCliResponse } from './response.js';
 // przy bare specyfierze). Atrapa i tak dopasowuje się do prawdziwego Obsidiana (kontrakt
 // `Plugin#registerCliHandler`, patrz jej nagłówek), więc jest wiarygodnym źródłem tych typów.
 import type { CliData, CliFlag, CliFlags } from '../../test-support/obsidian.js';
-import type { AgentMemory, ConsolidationStatus } from '@plugin/modules/memory/index.js';
+import type { AgentMemory } from '@plugin/modules/memory/index.js';
+import type { ConsolidationStatus } from '../memoryStatus.js';
 import type { CliAgentManager, ResolvedHost } from '../hostPlugin.js';
 import type { CliEffect, CliErrorCode, CliResponse } from './response.js';
 

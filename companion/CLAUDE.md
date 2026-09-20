@@ -118,8 +118,11 @@ alias `@plugin/`).
 **Runtime'owe importy TYLKO z lekkich, czystych plików** (bundle wtyczki ma zostać mały - patrz
 rozmiar w raporcie zadania, ~52 KB):
 - `@plugin/modules/memory/consolidationStatus.js` - `resolveConsolidationThresholds`,
-  `shouldTriggerConsolidation`, `resolvePlanDedupThreshold` (JEDNO liczydło progów konsolidacji,
-  współdzielone z produkcyjnym `SaveSessionWorkflow._shouldTriggerArchive` - NIE kopiować tej logiki),
+  `shouldTriggerConsolidation` (JEDNO liczydło progów konsolidacji, współdzielone z produkcyjnym
+  `SaveSessionWorkflow._shouldTriggerArchive` - NIE kopiować tej logiki). Wszystko inne z tamtego
+  pliku jest WŁASNOŚCIĄ tej wtyczki i mieszka w `memoryStatus.ts`: typy `ConsolidationStatus` /
+  `MemoryStateSource` oraz `resolvePlanDedupThreshold` (formuła 1:1 z
+  `modules/chat/consolidationRunner.ts` pluginu - w pluginie nie miała żadnego czytelnika),
 - `@plugin/modules/memory/ConsolidationRun.js` - `buildPlan`,
 - `@plugin/core/selftest.js` - `buildSelfTestReport` (dynamiczny `await import(...)` w `main.ts`).
 

@@ -7,8 +7,8 @@
  * pluginie WYŁĄCZNIE dla tego jednego wołacza (CLI) i znika stamtąd wraz z wyprowadzką CLI do
  * tej wtyczki - patrz `modules/memory/CLAUDE.md` (gotcha "jedno liczydło progów konsolidacji").
  *
- * Progi (`resolveConsolidationThresholds`/`shouldTriggerConsolidation`/`resolvePlanDedupThreshold`)
- * i plan (`buildPlan`) WCIĄŻ idą runtime'owym importem z pluginu, bezpośrednio z lekkich,
+ * Progi (`resolveConsolidationThresholds`/`shouldTriggerConsolidation`) i plan (`buildPlan`)
+ * WCIĄŻ idą runtime'owym importem z pluginu, bezpośrednio z lekkich,
  * czystych plików (`modules/memory/consolidationStatus.js`, `modules/memory/ConsolidationRun.js`,
  * NIE przez barrel `modules/memory/index.js` - ten ciągnie całe drzewo modułu). To jest JEDNO
  * liczydło współdzielone z produkcyjnym triggerem (`SaveSessionWorkflow._shouldTriggerArchive`) -
@@ -25,13 +25,60 @@
 import {
     resolveConsolidationThresholds,
     shouldTriggerConsolidation,
-    resolvePlanDedupThreshold,
 } from '@plugin/modules/memory/consolidationStatus.js';
 import { buildPlan as buildConsolidationPlan } from '@plugin/modules/memory/ConsolidationRun.js';
 
-import type { AgentMemory, BrainNoteInfo, ConsolidationStatus } from '@plugin/modules/memory/index.js';
-import type { MemoryStateSource } from '@plugin/modules/memory/consolidationStatus.js';
+import type { AgentMemory, BrainNoteInfo } from '@plugin/modules/memory/index.js';
 import type { MemoryState } from '@plugin/modules/memory/StateManager.js';
+
+// ── Kontrakt danych `memory-status` - WŁASNOŚĆ tej wtyczki, nie pluginu ──────────────────────
+//
+// W pluginie zostaje wyłącznie to, czego używa jego własny silnik: dwie czyste funkcje progów
+// (`resolveConsolidationThresholds`, `shouldTriggerConsolidation` - woła je
+// `SaveSessionWorkflow._shouldTriggerArchive`). Kształt statusu, źródło stanu i próg dedupu dla
+// planu nie mają w pluginie żadnego czytelnika, więc mieszkają TU. Typy wejść wyprowadzone z
+// sygnatury funkcji pluginu (`Parameters`/`ReturnType`), nie przepisane - zmiana po stronie
+// pluginu ma wywalić typecheck harnessu, a nie rozjechać się po cichu.
+
+type ThresholdState = Parameters<typeof resolveConsolidationThresholds>[0];
+type ThresholdSettings = Parameters<typeof resolveConsolidationThresholds>[1];
+type BrainNotesLimitSource = ReturnType<typeof resolveConsolidationThresholds>['brainNotesLimitSource'];
+
+/** Skąd pochodzą liczniki stanu: z pliku, z defaultów (pliku nie ma) albo z defaultów (plik nieczytelny). */
+export type MemoryStateSource = 'file' | 'missing' | 'unreadable';
+
+/** Status konsolidacji jednego agenta - kontrakt danych komendy `memory-status`. */
+export interface ConsolidationStatus {
+    agent: string;
+    state: { source: MemoryStateSource; lastArchiveAt: string | null };
+    brainNotes: { count: number; limit: number; limitSource: BrainNotesLimitSource; overLimit: boolean };
+    sessions: {
+        archivedSinceLastConsolidation: number;
+        threshold: number;
+        overThreshold: boolean;
+        uncoveredArchive: number;
+        activeFiles: number;
+        stateActive: number;
+    };
+    summaries: { uncoveredL1: number; uncoveredL2: number; batchSize: number };
+    /** Ta sama decyzja co produkcyjny trigger (`shouldTriggerConsolidation` z pluginu). */
+    wouldTrigger: boolean;
+    /** Kroki z `buildPlan` pluginu, w kolejności, tylko `kind`. */
+    plan: Array<{ kind: string }>;
+}
+
+/**
+ * Próg dedupu podawany do `buildPlan` - formuła 1:1 z produkcyjnym
+ * `modules/chat/consolidationRunner.ts:startConsolidationRun` (baza z
+ * `memoryV3BrainNotesThreshold`, domyślnie 20; `.state.json.brain_notes_limit` ją nadpisuje).
+ * CELOWO inna niż `resolveConsolidationThresholds`: tamta ma jeszcze fallback na
+ * `archiveBrainNotesThreshold`, którego trigger przebiegu nie zna. Dwie funkcje odpowiadają na
+ * dwa różne pytania - nie scalaj ich. Przy zmianie formuły w `consolidationRunner.ts` popraw tutaj.
+ */
+export function resolvePlanDedupThreshold(state: ThresholdState, settings: ThresholdSettings): number {
+    const base = Number(settings?.memoryV3BrainNotesThreshold) || 20;
+    return Number(state?.brain_notes_limit) || base;
+}
 
 /** Wycinek `AgentMemory`, jakiego potrzebuje własny, lekki odczyt `.state.json`. */
 type StateFsView = Pick<AgentMemory, 'vault' | 'paths'>;

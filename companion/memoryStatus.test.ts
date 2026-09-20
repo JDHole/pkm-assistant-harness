@@ -1,6 +1,6 @@
 import test from 'ava';
 import { AgentMemory } from '@plugin/modules/memory/AgentMemory.js';
-import { getConsolidationStatus } from './memoryStatus.js';
+import { getConsolidationStatus, resolvePlanDedupThreshold } from './memoryStatus.js';
 
 /**
  * PRZENIESIONE z `modules/memory/consolidationStatus.test.ts` pluginu - sekcja
@@ -11,8 +11,9 @@ import { getConsolidationStatus } from './memoryStatus.js';
  * ma `import type { Setting } from 'obsidian'`, co znika przy transpilacji), więc żaden przypadek
  * nie musiał zejść na krok scenariusza.
  *
- * Testy PURE funkcji (`resolveConsolidationThresholds`, `shouldTriggerConsolidation`,
- * `resolvePlanDedupThreshold`) oraz testy `StateManager.peek()` bezpośrednio NIE są tu
+ * `resolvePlanDedupThreshold` jest WŁASNOŚCIĄ tej wtyczki (w pluginie nie ma czytelnika) - jego
+ * testy są na końcu pliku. Testy PURE funkcji progów (`resolveConsolidationThresholds`,
+ * `shouldTriggerConsolidation`) oraz testy `StateManager.peek()` bezpośrednio NIE są tu
  * powtórzone - ta logika zostaje w pluginie NIEZMIENIONA (importowana runtime'owo z
  * `@plugin/modules/memory/consolidationStatus.js`/`ConsolidationRun.js`, patrz nagłówek
  * `memoryStatus.ts`) i jest już pokryta testami w repo pluginu; `StateManager.peek()` znika
@@ -361,4 +362,24 @@ test('getConsolidationStatus: .state.json z "active_sessions": null (poprawny JS
     t.is(status.state.source, 'file');
     t.is(status.sessions.stateActive, 0);
     t.is(status.sessions.archivedSinceLastConsolidation, 3);
+});
+
+// ── resolvePlanDedupThreshold - formuła produkcyjnego `consolidationRunner.startConsolidationRun`,
+//    CELOWO inna niż `resolveConsolidationThresholds` pluginu (brak fallbacku na archiveBrainNotesThreshold). ──
+
+test('resolvePlanDedupThreshold: bez state/settings -> domyślne 20 (jak produkcja)', t => {
+    t.is(resolvePlanDedupThreshold(null, null), 20);
+});
+
+test('resolvePlanDedupThreshold: memoryV3BrainNotesThreshold z ustawień nadpisuje domyślne 20', t => {
+    t.is(resolvePlanDedupThreshold(null, { memoryV3BrainNotesThreshold: 35 }), 35);
+});
+
+test('resolvePlanDedupThreshold: archiveBrainNotesThreshold jest IGNOROWANY - to jest różnica względem resolveConsolidationThresholds', t => {
+    t.is(resolvePlanDedupThreshold(null, { archiveBrainNotesThreshold: 50 }), 20);
+});
+
+test('resolvePlanDedupThreshold: state.brain_notes_limit nadpisuje bazę (ustawienia LUB domyślne 20)', t => {
+    t.is(resolvePlanDedupThreshold({ brain_notes_limit: 40 }, { memoryV3BrainNotesThreshold: 35 }), 40);
+    t.is(resolvePlanDedupThreshold({ brain_notes_limit: 40 }, null), 40);
 });

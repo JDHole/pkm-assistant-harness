@@ -2,7 +2,8 @@ import test from 'ava';
 import { buildCliCommands } from './commands.js';
 
 import type { Agent } from '@plugin/modules/agents/index.js';
-import type { AgentMemory, ConsolidationStatus } from '@plugin/modules/memory/index.js';
+import type { AgentMemory } from '@plugin/modules/memory/index.js';
+import type { ConsolidationStatus } from '../memoryStatus.js';
 import type { CliAgentManager, CliIndexStatus, ResolvedHost } from '../hostPlugin.js';
 import type { CliDeps } from './commands.js';
 
