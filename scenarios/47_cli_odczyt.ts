@@ -21,15 +21,22 @@
  * DOWÓD "TYLKO ODCZYT" (punkt e specyfikacji zadania): migawka rekurencyjna CAŁEGO drzewa
  * temp-vaulta (ścieżka + rozmiar + mtime + sha256 treści) TUŻ PRZED skonstruowaniem
  * wtyczki-nosiciela i TUŻ PO wywołaniu WSZYSTKICH komend tego scenariusza (w tym kroku "host
- * nieobecny" niżej) musi wyjść identyczna. Jedyny wykluczony katalog to
- * `.pkm-assistant/logs/` — `Logger`/`LogFileSink` (`core/utils/LogFileSink.ts`) buforuje
- * KAŻDE `log.info/warn/error` z CAŁEGO pluginu (nie tylko CLI) i zrzuca bufor na dysk co
+ * nieobecny" niżej) musi wyjść identyczna. Wykluczone są WYŁĄCZNIE dwa KONKRETNE pliki — sink
+ * `Logger`/`LogFileSink` (`core/utils/LogFileSink.ts`) hosta, `.pkm-assistant/logs/pkm-assistant.log`
+ * + jego rotacja `.pkm-assistant/logs/pkm-assistant.log.old` (`DEFAULT_PATH`/`oldPath` w
+ * `LogFileSink.ts`) — NIE cały katalog `.pkm-assistant/logs/`. `Logger` buforuje KAŻDE
+ * `log.info/warn/error` z CAŁEGO pluginu (nie tylko CLI) i zrzuca bufor na dysk co
  * `flushEveryN=20` wpisów ALBO po debounce ~1s — niezależnie od tego, czy ktokolwiek woła CLI.
  * Boot sam z siebie już zdążył zapełnić bufor, więc odpalenie flusha w oknie między dwiema
- * migawkami jest kwestią TIMINGU zegara, nie efektem komend pod testem. Sama treść vaulta
- * (ustawienia, notatki, YAML agentów, pamięć) idzie przez migawkę bez wyjątków. Wtyczka-nosiciel
- * sama (konstrukcja + `onload()`, czyste `registerCliHandler` na SOBIE) nie dotyka dysku w ogóle -
- * migawka "przed" obejmuje też ten krok, żeby to było zmierzone, nie tylko założone.
+ * migawkami jest kwestią TIMINGU zegara, nie efektem komend pod testem. Wykluczenie CAŁEGO
+ * katalogu maskowałoby też każdy INNY, NIEOCZEKIWANY plik, który mógłby się tam pojawić — np.
+ * raport `selftest-<stamp>.md`, który produkcyjny `run_self_test()` pluginu (`src/main.ts`) pisze
+ * właśnie tam; komenda CLI `selftest` tej wtyczki go NIE woła (woła `buildSelfTestReport`
+ * bezpośrednio, bez zapisu — patrz `companion/CLAUDE.md`), ale gdyby to się kiedyś zmieniło, ta
+ * migawka MA to złapać. Sama treść vaulta (ustawienia, notatki, YAML agentów, pamięć) idzie przez
+ * migawkę bez wyjątków. Wtyczka-nosiciel sama (konstrukcja + `onload()`, czyste
+ * `registerCliHandler` na SOBIE) nie dotyka dysku w ogóle - migawka "przed" obejmuje też ten
+ * krok, żeby to było zmierzone, nie tylko założone.
  */
 import fs from 'fs';
 import path from 'path';
@@ -64,8 +71,10 @@ const BUILT_IN_AGENT = 'Jaskier';
 
 const ODPOWIEDZ = 'Cztery komendy CLI przeszly test, boot niczego nie napisal.';
 
-/** Katalogi logów pluginu — patrz uzasadnienie w nagłówku pliku. */
-const EXCLUDED_DIRS = ['.pkm-assistant/logs/'];
+/** Sink Loggera hosta + jego rotacja — WYŁĄCZNIE te dwa pliki, patrz uzasadnienie w nagłówku
+ *  pliku i `core/utils/LogFileSink.ts` pluginu (`DEFAULT_PATH`/`oldPath`). Każdy INNY plik w
+ *  `.pkm-assistant/logs/` (np. `selftest-<stamp>.md`) MA wywrócić migawkę "zero zapisu". */
+const EXCLUDED_FILES = ['.pkm-assistant/logs/pkm-assistant.log', '.pkm-assistant/logs/pkm-assistant.log.old'];
 
 interface FileFingerprint {
   size: number;
@@ -73,11 +82,11 @@ interface FileFingerprint {
   sha256: string;
 }
 
-/** Migawka {ścieżka względna → {size, mtimeMs, sha256}} całego drzewa vaulta, bez katalogów logów. */
+/** Migawka {ścieżka względna → {size, mtimeMs, sha256}} całego drzewa vaulta, bez sinka Loggera. */
 function snapshotTree(vaultRoot: string): Record<string, FileFingerprint> {
   const out: Record<string, FileFingerprint> = {};
   for (const rel of listVaultFiles(vaultRoot)) {
-    if (EXCLUDED_DIRS.some((dir) => rel.startsWith(dir))) continue;
+    if (EXCLUDED_FILES.includes(rel)) continue;
     const abs = path.join(vaultRoot, rel);
     const st = fs.statSync(abs);
     const content = fs.readFileSync(abs);
