@@ -173,6 +173,14 @@ export default ({
     assert(status.data.plugin.id === HOST_ID, `status.data.plugin.id = "${status.data.plugin.id}", oczekiwano "${HOST_ID}"`);
     assert(status.data.companion.id === COMPANION_ID, `status.data.companion.id = "${status.data.companion.id}", oczekiwano "${COMPANION_ID}"`);
     assert(typeof status.data.plugin.instanceSince === 'string' && status.data.plugin.instanceSince.length > 0, `status.data.plugin.instanceSince powinien być znacznikiem ISO, jest: ${JSON.stringify(status.data.plugin.instanceSince)}`);
+    // K3: znacznik builda companiona + porównanie z bundlem hosta — pod harnessem (poza
+    // `build:companion`) builtAt/pluginCommit spadają na fallback "unknown" (`buildInfo.ts`),
+    // a bundleMtime na null (fixture nie ma prawdziwego <configDir>/plugins/pkm-assistant/main.js).
+    assert(typeof status.data.companion.builtAt === 'string' && status.data.companion.builtAt.length > 0, `status.data.companion.builtAt powinien być stringiem niepustym, jest: ${JSON.stringify(status.data.companion.builtAt)}`);
+    assert(typeof status.data.companion.pluginCommit === 'string' && status.data.companion.pluginCommit.length > 0, `status.data.companion.pluginCommit powinien być stringiem niepustym, jest: ${JSON.stringify(status.data.companion.pluginCommit)}`);
+    assert(typeof status.data.companion.pluginTreeDirty === 'boolean', `status.data.companion.pluginTreeDirty powinien być boolem, jest: ${JSON.stringify(status.data.companion.pluginTreeDirty)}`);
+    assert(status.data.plugin.bundleMtime === null || typeof status.data.plugin.bundleMtime === 'string', `status.data.plugin.bundleMtime powinien być stringiem albo null, jest: ${JSON.stringify(status.data.plugin.bundleMtime)}`);
+    assert(status.data.companionStale === null || typeof status.data.companionStale === 'boolean', `status.data.companionStale powinien być boolem albo null, jest: ${JSON.stringify(status.data.companionStale)}`);
     assert(!!status.data.agents, 'status.data.agents jest null — agentManager niedostępny mimo ready:true.');
     const agentNames = status.data.agents!.names;
     assert(agentNames.includes(FIXTURE_AGENT), `status.data.agents.names nie zawiera "${FIXTURE_AGENT}" (fixture): ${JSON.stringify(agentNames)}`);

@@ -37,6 +37,7 @@ import esbuild from 'esbuild';
 import type { Plugin } from 'esbuild';
 import { pluginRoot } from './lib/pluginRoot.ts';
 import { deployCompanion } from './lib/companionDeploy.ts';
+import { resolvePluginGitInfo } from './lib/pluginBuildInfo.ts';
 
 const HARNESS_DIR = path.dirname(fileURLToPath(import.meta.url));
 
@@ -207,6 +208,17 @@ async function buildCompanion(): Promise<void> {
     const outdir = path.join(HARNESS_DIR, 'dist', 'companion');
     process.stdout.write(`[harness/build] companion, plugin: ${korzenPluginu}\n`);
 
+    // Znacznik "z jakiego stanu repo pluginu zbudowano TĘ wtyczkę" (K3) - `companionStale` w
+    // `StatusData` (`companion/cli/commands.ts`) porównuje `builtAt` z mtime bundla pluginu w
+    // vaulcie, żeby ostrzec, gdy plugin poszedł do przodu, a wtyczka-nosiciel nie. Patrz
+    // `lib/pluginBuildInfo.ts` i `companion/buildInfo.ts` (odbiorca tych trzech stałych).
+    const builtAt = new Date().toISOString();
+    const pluginGitInfo = resolvePluginGitInfo(korzenPluginu);
+    process.stdout.write(
+        `[harness/build] companion znacznik: builtAt=${builtAt} pluginCommit=${pluginGitInfo.commit}`
+        + `${pluginGitInfo.dirty ? ' (drzewo pluginu BRUDNE)' : ''}\n`,
+    );
+
     await esbuild.build({
         entryPoints: { main: path.join(HARNESS_DIR, 'companion', 'main.ts') },
         outdir,
@@ -223,6 +235,15 @@ async function buildCompanion(): Promise<void> {
         // całego Obsidiana (dokładnie jak `external: ['obsidian']` w produkcyjnym `esbuild.js`
         // pluginu).
         external: ['obsidian'],
+        // Trzy stałe wkompilowane DOSŁOWNIE (nie import - `companion/buildInfo.ts` czyta je jako
+        // globalne identyfikatory przez `typeof` guard, patrz jego nagłówek). `JSON.stringify`
+        // dla stringów (literał w cudzysłowie), `String(...)` dla boola (goły token `true`/`false`,
+        // nie string "true"/"false" - `define` wstawia WARTOŚĆ ŹRÓDŁOWĄ, nie zserializowany JSON).
+        define: {
+            __COMPANION_BUILT_AT__: JSON.stringify(builtAt),
+            __COMPANION_PLUGIN_COMMIT__: JSON.stringify(pluginGitInfo.commit),
+            __COMPANION_PLUGIN_TREE_DIRTY__: String(pluginGitInfo.dirty),
+        },
         plugins: [pluginAliasPlugin(korzenPluginu), cssImportPlugin, markdownImportPlugin],
     });
 

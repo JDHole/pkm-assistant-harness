@@ -1,5 +1,5 @@
 import test from 'ava';
-import { resolveHost } from './hostPlugin.js';
+import { resolveHost, resolvePluginBundleMtime } from './hostPlugin.js';
 
 /**
  * `resolveHost` jest NOWY w tym repo (nie ma odpowiednika w `modules/cli/` pluginu - tam
@@ -148,4 +148,59 @@ test('host.raw jest DOKŁADNIE tym samym obiektem referencyjnie (identity, nie k
     const pkmAssistant = { agentManager: FULL_AGENT_MANAGER };
     const host = resolveHost(makeApp({ 'pkm-assistant': pkmAssistant }));
     t.is(host?.raw, pkmAssistant);
+});
+
+// ── K3: resolvePluginBundleMtime - ISO mtime <configDir>/plugins/pkm-assistant/main.js ────
+
+function makeStatApp(configDir: unknown, statImpl: ((path: string) => unknown) | undefined): unknown {
+    return { vault: { configDir, adapter: statImpl ? { stat: statImpl } : {} } };
+}
+
+test('resolvePluginBundleMtime: app nie-obiekt (null/string/liczba) -> null', async t => {
+    t.is(await resolvePluginBundleMtime(null), null);
+    t.is(await resolvePluginBundleMtime('nope'), null);
+    t.is(await resolvePluginBundleMtime(42), null);
+});
+
+test('resolvePluginBundleMtime: brak app.vault -> null', async t => {
+    t.is(await resolvePluginBundleMtime({}), null);
+});
+
+test('resolvePluginBundleMtime: configDir nie-string (brak/liczba/pusty) -> null, stat NIE wołane', async t => {
+    let called = false;
+    const stat = () => { called = true; return { mtime: 1 }; };
+    t.is(await resolvePluginBundleMtime(makeStatApp(undefined, stat)), null);
+    t.is(await resolvePluginBundleMtime(makeStatApp(42, stat)), null);
+    t.is(await resolvePluginBundleMtime(makeStatApp('', stat)), null);
+    t.false(called, 'configDir zły kształt -> stat() nie ma prawa się wykonać');
+});
+
+test('resolvePluginBundleMtime: adapter bez stat() jako funkcji -> null', async t => {
+    t.is(await resolvePluginBundleMtime(makeStatApp('.obsidian', undefined)), null);
+});
+
+test('resolvePluginBundleMtime: stat() zwraca {mtime} -> ISO string tego mtime, ścieżka = <configDir>/plugins/pkm-assistant/main.js', async t => {
+    let receivedPath: string | undefined;
+    const mtime = Date.UTC(2026, 8, 20, 10, 0, 0);
+    const stat = (path: string) => { receivedPath = path; return { mtime }; };
+
+    const result = await resolvePluginBundleMtime(makeStatApp('.obsidian', stat));
+
+    t.is(result, new Date(mtime).toISOString());
+    t.is(receivedPath, '.obsidian/plugins/pkm-assistant/main.js');
+});
+
+test('resolvePluginBundleMtime: stat() zwraca null (plik nie istnieje) -> null', async t => {
+    const stat = () => null;
+    t.is(await resolvePluginBundleMtime(makeStatApp('.obsidian', stat)), null);
+});
+
+test('resolvePluginBundleMtime: stat() zwraca kształt bez pola mtime (liczba) -> null', async t => {
+    const stat = () => ({ size: 123 });
+    t.is(await resolvePluginBundleMtime(makeStatApp('.obsidian', stat)), null);
+});
+
+test('resolvePluginBundleMtime: stat() RZUCA -> null, resolvePluginBundleMtime nie propaguje wyjątku', async t => {
+    const stat = () => { throw new Error('boom'); };
+    t.is(await resolvePluginBundleMtime(makeStatApp('.obsidian', stat)), null);
 });

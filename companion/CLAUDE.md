@@ -17,8 +17,9 @@ instancję głównego pluginu (`pkm-assistant`) z `app.plugins.plugins`.
 companion/
 ├── manifest.json            # id "pkm-assistant-dev", minAppVersion 1.12.2, isDesktopOnly
 ├── main.ts                  # klasa wtyczki (extends Plugin) - onload() rejestruje komendy
-├── hostPlugin.ts             # resolveHost(app) - zwalidowany widok żywej instancji pkm-assistant
+├── hostPlugin.ts             # resolveHost(app) - zwalidowany widok żywej instancji pkm-assistant; resolvePluginBundleMtime(app)
 ├── memoryStatus.ts           # getConsolidationStatus - status konsolidacji, przeniesiony z pluginu
+├── buildInfo.ts               # K3: COMPANION_BUILT_AT/PLUGIN_COMMIT/PLUGIN_TREE_DIRTY - wstrzykiwane esbuild `define`, typeof-guard fallback
 ├── logger.ts                 # lokalny logger (console.debug/warn) - NIE core/utils/Logger.js pluginu
 ├── deploy.local.example.json # szablon deploy.local.json (ten plik NIE jest gitignored)
 ├── CLAUDE.md                 # ten plik
@@ -44,8 +45,11 @@ infrastruktura harnessu, nie runtime wtyczki) i entry esbuilda (`esbuild.harness
   `CliDeps`/`CliCommandSpec`/`StatusData`/`AgentPromptData`/`MemoryStatusData`/`CliEffect`/
   `CliErrorCode`/`CliResponse`. `buildCliCommands` (w `cli/commands.ts`) świadomie NIE jest w
   barrelu - jedyny konsument spoza `register.ts` to testy tego samego folderu.
-- `hostPlugin.ts` eksportuje `resolveHost(app)`, `ResolvedHost`, `CliAgentManager`, `CliIndexStatus`.
-- `memoryStatus.ts` eksportuje `getConsolidationStatus(agentMemory)`.
+- `hostPlugin.ts` eksportuje `resolveHost(app)`, `ResolvedHost`, `CliAgentManager`, `CliIndexStatus`,
+  `resolvePluginBundleMtime(app)` (K3 - ISO mtime bundla HOSTA w vaulcie, `null` gdy nie da się ustalić).
+- `memoryStatus.ts` eksportuje `getConsolidationStatus(agentMemory)`, `resolvePlanDedupThreshold`.
+- `buildInfo.ts` eksportuje `COMPANION_BUILT_AT`/`COMPANION_PLUGIN_COMMIT`/`COMPANION_PLUGIN_TREE_DIRTY`
+  (K3, patrz gotcha "dwa bundle - jedno liczydło" niżej).
 
 ## Prefiks komend i tożsamość
 
@@ -76,8 +80,9 @@ brak -> `agent_not_found`; wiele trafień w kroku 2 -> `agent_ambiguous`.
 
 ```ts
 interface StatusData {
-    plugin: { id: string; version: string; instanceSince: string | null };
-    companion: { id: string; version: string };
+    plugin: { id: string; version: string; instanceSince: string | null; bundleMtime: string | null };
+    companion: { id: string; version: string; builtAt: string; pluginCommit: string; pluginTreeDirty: boolean };
+    companionStale: boolean | null;
     ready: boolean;
     agents: { count: number; active: string | null; names: string[] } | null;
     index: { status: string; indexed: number; total: number; modelKey: string | null; lastError: string | null } | null;
@@ -86,14 +91,24 @@ interface StatusData {
 ```
 
 `plugin.instanceSince` zastępuje dawne `loadedAt` (kiedy TA wtyczka się zarejestrowała) -
-wtyczka-nosiciel pamięta OSTATNIO WIDZIANĄ żywą instancję hosta (porównanie tożsamości
-referencji `===`, w zamknięciu `buildCliCommands` - patrz `createInstanceTracker` w
-`cli/commands.ts`) i chwilę, gdy zobaczyła ją PIERWSZY RAZ. Ta sama referencja między
-wywołaniami -> ten sam znacznik; nowa instancja hosta (po `plugin:reload id=pkm-assistant`) ->
-nowy znacznik. Hosta nie ma -> `instanceSince: null`, `plugin.version: 'unknown'`.
+wtyczka-nosiciel pamięta OSTATNIO WIDZIANĄ żywą instancję hosta jako SŁABĄ referencję (`WeakRef`,
+porównanie tożsamości przez `deref()`, w zamknięciu `buildCliCommands` - patrz
+`createInstanceTracker` w `cli/commands.ts`) i chwilę, gdy zobaczyła ją PIERWSZY RAZ. Ta sama
+referencja między wywołaniami -> ten sam znacznik; nowa instancja hosta (po
+`plugin:reload id=pkm-assistant`) -> nowy znacznik. `WeakRef`, NIE twarda referencja: po
+zniknięciu hosta ta wtyczka (żyjąca dalej niezależnie od niego) nie ma prawa trzymać całą jego
+graf (AgentManager, indeks, pamięci agentów) przy życiu w nieskończoność - GC może posprzątać, gdy
+nikt inny już nie trzyma hosta. Hosta nie ma -> `instanceSince: null`, `plugin.version: 'unknown'`.
+
+`plugin.bundleMtime` to ISO mtime pliku `<configDir>/plugins/pkm-assistant/main.js` w vaulcie
+(`hostPlugin.ts`, `resolvePluginBundleMtime` - czyta `app.vault.configDir` + `adapter.stat`,
+WOŁANE PRZY KAŻDYM `status`, nie cache'owane) - `null`, gdy nie da się ustalić (brak configDir,
+brak pliku, adapter bez `stat`).
 
 `companion.id`/`companion.version` to tożsamość TEJ wtyczki (z jej własnego `manifest.json`),
-przydatna do potwierdzenia, którą wersję companiona agent w ogóle woła.
+przydatna do potwierdzenia, którą wersję companiona agent w ogóle woła. `companion.builtAt`/
+`pluginCommit`/`pluginTreeDirty` i `companionStale` - patrz gotcha "dwa bundle - jedno liczydło"
+niżej.
 
 ## Rozwiązywanie hosta (`hostPlugin.ts`)
 
@@ -196,6 +211,23 @@ wolno) importować całych klas jako wartości.
   Obsidiana.** Istnieje wyłącznie w `test-support/obsidian.ts` (`Plugin._registeredCliHandlers`)
   po to, żeby scenariusz `47_cli_odczyt.ts` mógł odczytać zarejestrowane handlery bez wołania
   prawdziwego CLI procesu. Żaden kod produkcyjny (`main.ts`, `cli/*.ts`) na tym polu nie polega.
+- ⚠️ **Dwa bundle, jedno liczydło - prawda TYLKO na poziomie źródeł i CHWILI BUILDA (K3,
+  recenzja adwersaryjna).** `memoryStatus.ts` i `main.ts` importują progi konsolidacji/plan/raport
+  selftestu runtime'owo z `@plugin/...`, ale to, co WCHODZI do `dist/companion/main.js`, jest
+  WKOMPILOWANE w chwili `npm run build:companion` - esbuild bundluje te funkcje ze ŹRÓDEŁ pluginu
+  na dysku, NIE linkuje do `dist/main.js` pluginu w vaulcie. Jeśli plugin zostanie przebudowany
+  PÓŹNIEJ (nowa formuła progów, nowy kształt raportu selftestu), TA wtyczka o tym nie wie, dopóki
+  ktoś nie odpali `build:companion` ponownie - **po KAŻDYM buildzie pluginu przebuduj też
+  wtyczkę**. `StatusData.companionStale` (`cli/commands.ts`) to wykrywa: `true`, gdy
+  `plugin.bundleMtime` (mtime `dist/main.js` pluginu w vaulcie, `hostPlugin.ts`
+  `resolvePluginBundleMtime`) jest PÓŹNIEJSZY niż `companion.builtAt` (znacznik WŁASNEGO builda
+  tej wtyczki, wstrzyknięty przez esbuild `define` w `buildCompanion()` - `lib/pluginBuildInfo.ts`
+  + `companion/buildInfo.ts`) - **`companionStale:true` znaczy, że wyniki `memory-status`/
+  `selftest` mogą liczyć/opisywać STARĄ formułę/kształt**, nie dzisiejszą. `null`, gdy nie da się
+  ustalić (brak `configDir`, brak pliku bundla pluginu w vaulcie). Poza prawdziwym buildem
+  esbuilda (testy AVA, scenariusze - inny wpis esbuilda bez tego `define`) `companion.builtAt`/
+  `pluginCommit` spadają na fallback `'unknown'`, `pluginTreeDirty` na `false` - `typeof` guard w
+  `buildInfo.ts`, nigdy nie rzuca.
 
 ## Powiązane
 
@@ -203,5 +235,7 @@ wolno) importować całych klas jako wartości.
 - `esbuild.harness.ts` - `buildCompanion()`, `pluginAliasPlugin` (alias `@plugin/` bez atrapy
   `obsidian` - w odróżnieniu od `pluginTreePlugin` używanego przez `run.js`/`scenarios.js`).
 - `lib/companionDeploy.ts` - `parseDeployConfig`/`companionDeployDir`/`deployCompanion`.
+- `lib/pluginBuildInfo.ts` - `resolvePluginGitInfo(pluginRootDir)` (K3 - commit + czystość drzewa
+  pluginu w chwili `build:companion`, wołane z `esbuild.harness.ts` -> `define`).
 - `scenarios/47_cli_odczyt.ts` - end-to-end na PRAWDZIWYM pluginie jako hoście, w tej samej
   atrapie `app` (offline, brak modelu, migawka drzewa vaulta przed/po = dowód zerowego zapisu).

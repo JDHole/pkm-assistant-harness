@@ -24,9 +24,10 @@
 // @ts-expect-error TS2307 - pakiet 'obsidian' nie jest zainstalowany w tym repo (patrz wyżej)
 import { Plugin, Platform } from 'obsidian';
 import { registerCliCommands } from './cli/index.js';
-import { resolveHost } from './hostPlugin.js';
+import { resolveHost, resolvePluginBundleMtime } from './hostPlugin.js';
 import { getConsolidationStatus } from './memoryStatus.js';
 import { log } from './logger.js';
+import { COMPANION_BUILT_AT, COMPANION_PLUGIN_COMMIT, COMPANION_PLUGIN_TREE_DIRTY } from './buildInfo.js';
 
 import type { SelfTestPlugin } from '@plugin/core/selftest.js';
 import type { CliFlags, CliHandler, RegisteredCliHandler } from '../test-support/obsidian.js';
@@ -58,6 +59,14 @@ export default class PkmAssistantDevPlugin extends Plugin {
         const result = registerCliCommands(this, {
             companionId: this.manifest.id || 'pkm-assistant-dev',
             companionVersion: this.manifest.version || 'unknown',
+            // K3: znacznik "z jakiego stanu repo pluginu zbudowano TĘ wtyczkę" - wstrzyknięty
+            // przez esbuild `define` WYŁĄCZNIE w `buildCompanion()`, poza tym buildem fallback
+            // "unknown"/false (patrz `buildInfo.ts`). `resolvePluginBundleMtime` czyta ŻYWY stan
+            // bundla hosta na dysku PRZY KAŻDYM wywołaniu `status` - to się NIE cache'uje tutaj.
+            companionBuiltAt: COMPANION_BUILT_AT,
+            companionPluginCommit: COMPANION_PLUGIN_COMMIT,
+            companionPluginTreeDirty: COMPANION_PLUGIN_TREE_DIRTY,
+            resolvePluginBundleMtime: () => resolvePluginBundleMtime(this.app),
             resolveHost: () => resolveHost(this.app),
             selfTest: async (hostRaw: Record<string, unknown>) => {
                 const { buildSelfTestReport } = await import('@plugin/core/selftest.js');

@@ -14,6 +14,15 @@
  * liczydło współdzielone z produkcyjnym triggerem (`SaveSessionWorkflow._shouldTriggerArchive`) -
  * kopiowanie tej logiki tutaj byłoby dokładnie tym, przed czym ostrzega `modules/memory/CLAUDE.md`.
  *
+ * ⚠️ "JEDNO liczydło" jest prawdą na poziomie ŹRÓDEŁ i CHWILI BUILDA tej wtyczki, NIE w runtime:
+ * `dist/companion/main.js` ma te dwie funkcje WKOMPILOWANE (esbuild bundluje `@plugin/...` ze
+ * ŹRÓDEŁ, nie linkuje do `dist/main.js` pluginu w vaulcie) - jeśli plugin zostanie przebudowany
+ * PÓŹNIEJ (nowa formuła progów), TA wtyczka o tym nie wie, dopóki ktoś nie odpali
+ * `npm run build:companion` ponownie. `StatusData.companionStale` (`cli/commands.ts`, K3)
+ * porównuje znacznik builda tej wtyczki z mtime bundla pluginu w vaulcie i ostrzega, gdy się
+ * rozjechały - `true` znaczy "wyniki `memory-status`/`selftest` mogą liczyć starą formułę".
+ * Pełny opis: `companion/CLAUDE.md`, gotcha "dwa bundle - jedno liczydło".
+ *
  * Zachowane poprawki ze źródła: zero write/mkdir na rozgrzanej instancji (`peekState` i
  * `listBrainNotesIfPresent` czytają, nigdy nie piszą/nie zakładają folderów), obecność `brain/`
  * rozstrzygana z LISTINGU (nie z gołego `exists()` - ten kłamie `false` na dyskach chmurowych),

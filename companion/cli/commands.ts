@@ -61,6 +61,15 @@ export interface CliDeps {
     companionId: string;
     /** Wersja TEJ wtyczki - `StatusData.companion.version`. */
     companionVersion: string;
+    /** ISO znacznik chwili builda TEGO bundla (`companion/buildInfo.ts`, K3) - `StatusData.companion.builtAt`. */
+    companionBuiltAt: string;
+    /** Krótki hash `HEAD` repo pluginu w chwili builda TEGO bundla - `StatusData.companion.pluginCommit`. */
+    companionPluginCommit: string;
+    /** Czy drzewo pluginu było brudne w chwili builda TEGO bundla - `StatusData.companion.pluginTreeDirty`. */
+    companionPluginTreeDirty: boolean;
+    /** ISO mtime bundla HOSTA na dysku (`hostPlugin.ts` `resolvePluginBundleMtime`) - `null`, gdy
+     *  nie da się ustalić. Porównywane z `companionBuiltAt` -> `StatusData.companionStale`. */
+    resolvePluginBundleMtime: () => Promise<string | null>;
     /** Rozwiązuje żywą instancję hosta `pkm-assistant` - `null`, gdy nie ma go/nieaktywny. */
     resolveHost: () => ResolvedHost | null;
     /** Raport self-testu HOSTA - nieprzezroczysty ładunek, przechodzi do `data` bez kształtowania. */
@@ -73,9 +82,13 @@ export interface CliDeps {
 /** `pkm-assistant-dev:status` - działa ZAWSZE, nawet gdy hosta nie ma w ogóle. */
 export interface StatusData {
     /** Host, o którym ta wtyczka-nosiciel raportuje - `pkm-assistant`. */
-    plugin: { id: string; version: string; instanceSince: string | null };
-    /** TA wtyczka-nosiciel sama - `pkm-assistant-dev`. */
-    companion: { id: string; version: string };
+    plugin: { id: string; version: string; instanceSince: string | null; bundleMtime: string | null };
+    /** TA wtyczka-nosiciel sama - `pkm-assistant-dev`, plus znacznik JEJ WŁASNEGO builda (K3). */
+    companion: { id: string; version: string; builtAt: string; pluginCommit: string; pluginTreeDirty: boolean };
+    /** `true`, gdy `plugin.bundleMtime` jest PÓŹNIEJSZY niż `companion.builtAt` (plugin
+     *  przebudowany PO tej wtyczce -> jej wbudowane liczydło progów/plan/raport selftestu może
+     *  być nieaktualne, patrz `companion/CLAUDE.md`). `null`, gdy nie da się ustalić. */
+    companionStale: boolean | null;
     ready: boolean;
     agents: { count: number; active: string | null; names: string[] } | null;
     index: { status: string; indexed: number; total: number; modelKey: string | null; lastError: string | null } | null;
@@ -248,18 +261,20 @@ function brainStatVerdict(before: BrainSnapshot | undefined, after: BrainSnapsho
 
 /**
  * `status` nie wymaga hosta gotowego - buduje odpowiedź z tego, co akurat udało się rozwiązać
- * (patrz `StatusData`). Jedyna wspólna bramka to `format`.
+ * (patrz `StatusData`). Jedyna wspólna bramka to `format`. `build` jest ASYNC od K3 (`companion.
+ * bundleMtime` czyta `adapter.stat` żywego hosta) - `Promise<CliResponse<unknown>>`, nie goły
+ * `CliResponse<unknown>`.
  */
 async function runGuardedAlways(
     id: string,
     params: CliData,
-    build: () => CliResponse<unknown>,
+    build: () => Promise<CliResponse<unknown>>,
 ): Promise<string> {
     log.debug('CLI', `${id} params=${JSON.stringify(params)}`);
     try {
         const formatError = validateFormat(params);
         if (formatError) return serializeCliResponse(errorResponse(id, formatError, `Unsupported format "${String(params.format)}" - only "json" is supported.`));
-        return serializeCliResponse(build());
+        return serializeCliResponse(await build());
     } catch (e) {
         return serializeCliResponse(errorResponse(id, 'internal', errorMessage(e)));
     }
@@ -334,7 +349,23 @@ export function createInstanceTracker(now: () => Date, WeakRefCtor: typeof WeakR
     };
 }
 
-function buildStatusData(deps: CliDeps, trackInstance: (raw: object) => string, commandIds: string[]): StatusData {
+/**
+ * `true`, gdy `bundleMtime` (pluginu, na dysku) jest PÓŹNIEJSZY niż `builtAt` (TEJ wtyczki, w
+ * chwili jej WŁASNEGO builda) - plugin poszedł do przodu, a wtyczka-nosiciel nie została
+ * przebudowana, więc jej wbudowane liczydło progów/plan/raport selftestu (K3, patrz
+ * `companion/CLAUDE.md`) może opisywać STARĄ formułę. `null`, gdy któregokolwiek znacznika nie
+ * da się ustalić (`bundleMtime:null`, ALBO `builtAt` spoza prawdziwego builda esbuilda -
+ * `'unknown'` z `companion/buildInfo.ts` nie parsuje się jako data).
+ */
+function computeCompanionStale(builtAt: string, bundleMtime: string | null): boolean | null {
+    if (bundleMtime === null) return null;
+    const builtAtMs = Date.parse(builtAt);
+    const bundleMtimeMs = Date.parse(bundleMtime);
+    if (!Number.isFinite(builtAtMs) || !Number.isFinite(bundleMtimeMs)) return null;
+    return bundleMtimeMs > builtAtMs;
+}
+
+async function buildStatusData(deps: CliDeps, trackInstance: (raw: object) => string, commandIds: string[]): Promise<StatusData> {
     const host = deps.resolveHost();
     const agents = host?.agentManager
         ? { count: host.agentManager.getAllAgents().length, active: host.agentManager.getActiveAgent()?.name ?? null, names: host.agentManager.getAllAgents().map(a => a.name) }
@@ -351,13 +382,23 @@ function buildStatusData(deps: CliDeps, trackInstance: (raw: object) => string, 
         }
         : null;
 
+    const bundleMtime = await deps.resolvePluginBundleMtime();
+
     return {
         plugin: {
             id: host?.id ?? 'pkm-assistant',
             version: host?.version ?? 'unknown',
             instanceSince: host ? trackInstance(host.raw) : null,
+            bundleMtime,
         },
-        companion: { id: deps.companionId, version: deps.companionVersion },
+        companion: {
+            id: deps.companionId,
+            version: deps.companionVersion,
+            builtAt: deps.companionBuiltAt,
+            pluginCommit: deps.companionPluginCommit,
+            pluginTreeDirty: deps.companionPluginTreeDirty,
+        },
+        companionStale: computeCompanionStale(deps.companionBuiltAt, bundleMtime),
         ready: host?.isReady ?? false,
         agents,
         index,
@@ -464,7 +505,7 @@ export function buildCliCommands(deps: CliDeps): CliCommandSpec[] {
             id: statusId,
             description: STATUS_DESCRIPTION,
             flags: { format: FORMAT_FLAG },
-            run: params => runGuardedAlways(statusId, params, () => okResponse(statusId, buildStatusData(deps, trackInstance, ids))),
+            run: params => runGuardedAlways(statusId, params, async () => okResponse(statusId, await buildStatusData(deps, trackInstance, ids))),
         },
         {
             id: selftestId,

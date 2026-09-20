@@ -17,6 +17,10 @@ function makeDeps(): CliDeps {
     return {
         companionId: 'pkm-assistant-dev',
         companionVersion: '0.1.0',
+        companionBuiltAt: '2026-09-01T00:00:00.000Z',
+        companionPluginCommit: 'abc1234',
+        companionPluginTreeDirty: false,
+        resolvePluginBundleMtime: async () => null,
         resolveHost: () => null,
         selfTest: async () => ({ ok: true }),
         consolidationStatus: async () => {

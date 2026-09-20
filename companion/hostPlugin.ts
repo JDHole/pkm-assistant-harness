@@ -101,6 +101,35 @@ function resolveIsReady(raw: Record<string, unknown>): boolean {
 }
 
 /**
+ * ISO mtime bundla HOSTA na dysku (`<configDir>/plugins/pkm-assistant/main.js`, K3) - NIE mtime
+ * tej wtyczki. Po co: `companion/` wkompilowuje progi konsolidacji/plan/raport selftestu ze
+ * ŹRÓDEŁ pluginu W CHWILI WŁASNEGO builda (patrz `companion/buildInfo.ts`) - jeśli plugin w
+ * vaulcie zostanie przebudowany PÓŹNIEJ, ta wtyczka o tym nie wie. `StatusData.companionStale`
+ * (`cli/commands.ts`) porównuje ten znacznik z `companion.builtAt`, żeby to ujawnić.
+ *
+ * Czyta `app.vault.configDir` (nazwa folderu konfiguracji Obsidiana - NIE zgadywana, tak jak
+ * `AccessGuard.setConfigDir` w pluginie) i `app.vault.adapter.stat(...)`, zawężając NA GRANICY
+ * jak `resolveHost` - `null` na każdym brakującym/złym kształcie, fail-soft (nigdy nie rzuca).
+ */
+export async function resolvePluginBundleMtime(app: unknown): Promise<string | null> {
+    if (!isRecord(app)) return null;
+    const vault = app.vault;
+    if (!isRecord(vault)) return null;
+    if (typeof vault.configDir !== 'string' || vault.configDir === '') return null;
+    const adapter = vault.adapter;
+    if (!isRecord(adapter) || typeof adapter.stat !== 'function') return null;
+
+    let stat: unknown;
+    try {
+        stat = await adapter.stat(`${vault.configDir}/plugins/${HOST_PLUGIN_ID}/main.js`);
+    } catch {
+        return null;
+    }
+    if (!isRecord(stat) || typeof stat.mtime !== 'number') return null;
+    return new Date(stat.mtime).toISOString();
+}
+
+/**
  * Rozwiązuje żywą instancję hosta z `app.plugins.plugins['pkm-assistant']`. `null`, gdy hosta
  * nie ma w ogóle (nie zainstalowany, wyłączony, albo `app.plugins` nie ma oczekiwanego
  * kształtu - atrapy testowe bywają skromniejsze niż prawdziwy Obsidian).

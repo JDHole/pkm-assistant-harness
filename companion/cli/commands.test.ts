@@ -120,6 +120,13 @@ interface DepsFixture {
     consolidationByMarker?: Record<string, ConsolidationStatus | Error>;
     companionVersion?: string;
     nowSequence?: Date[];
+    /** K3: znacznik "kiedy/z jakiego commita pluginu zbudowano TĘ wtyczkę" - fejkowe, stałe
+     *  wartości (nie prawdziwy `companion/buildInfo.ts`), żeby testować `companionStale`. */
+    companionBuiltAt?: string;
+    companionPluginCommit?: string;
+    companionPluginTreeDirty?: boolean;
+    /** `null` domyślnie - "nie da się ustalić" (brak configDir/pliku), patrz `hostPlugin.ts`. */
+    resolvePluginBundleMtime?: () => Promise<string | null>;
 }
 
 function makeDeps(fixture: DepsFixture = {}): CliDeps {
@@ -131,6 +138,10 @@ function makeDeps(fixture: DepsFixture = {}): CliDeps {
     return {
         companionId: 'pkm-assistant-dev',
         companionVersion: fixture.companionVersion ?? '0.1.0',
+        companionBuiltAt: fixture.companionBuiltAt ?? '2026-09-01T00:00:00.000Z',
+        companionPluginCommit: fixture.companionPluginCommit ?? 'abc1234',
+        companionPluginTreeDirty: fixture.companionPluginTreeDirty ?? false,
+        resolvePluginBundleMtime: fixture.resolvePluginBundleMtime ?? (async () => null),
         resolveHost: () => {
             if (fixture.hostError) throw fixture.hostError;
             return hostGetter();
@@ -188,8 +199,9 @@ test('status: host nieobecny -> ready=false, agents=null, index=null, plugin=def
         verified: true,
         effect: 'unchanged',
         data: {
-            plugin: { id: 'pkm-assistant', version: 'unknown', instanceSince: null },
-            companion: { id: 'pkm-assistant-dev', version: '0.1.0' },
+            plugin: { id: 'pkm-assistant', version: 'unknown', instanceSince: null, bundleMtime: null },
+            companion: { id: 'pkm-assistant-dev', version: '0.1.0', builtAt: '2026-09-01T00:00:00.000Z', pluginCommit: 'abc1234', pluginTreeDirty: false },
+            companionStale: null,
             ready: false,
             agents: null,
             index: null,
@@ -201,6 +213,48 @@ test('status: host nieobecny -> ready=false, agents=null, index=null, plugin=def
             ],
         },
     });
+});
+
+// ── K3: companionStale - true / false / null, na fejkowych deps ──────────────────────────
+
+test('status: companionStale=true, gdy bundleMtime pluginu POZNIEJSZY niż companion.builtAt (plugin przebudowany PO wtyczce)', async t => {
+    const am = makeAgentManager({ names: ['Jaskier'] });
+    const deps = makeDeps({
+        host: makeHost({ agentManager: am }),
+        companionBuiltAt: '2026-09-01T00:00:00.000Z',
+        resolvePluginBundleMtime: async () => '2026-09-02T00:00:00.000Z',
+    });
+    const response = await run(deps, 'status');
+
+    t.true(response.ok);
+    t.is(response.data.plugin.bundleMtime, '2026-09-02T00:00:00.000Z');
+    t.is(response.data.companionStale, true);
+});
+
+test('status: companionStale=false, gdy bundleMtime pluginu NIE jest późniejszy niż companion.builtAt (wtyczka aktualna)', async t => {
+    const am = makeAgentManager({ names: ['Jaskier'] });
+    const deps = makeDeps({
+        host: makeHost({ agentManager: am }),
+        companionBuiltAt: '2026-09-05T00:00:00.000Z',
+        resolvePluginBundleMtime: async () => '2026-09-01T00:00:00.000Z',
+    });
+    const response = await run(deps, 'status');
+
+    t.true(response.ok);
+    t.is(response.data.companionStale, false);
+});
+
+test('status: companionStale=null, gdy bundleMtime nie da się ustalić (brak configDir/pliku hosta)', async t => {
+    const am = makeAgentManager({ names: ['Jaskier'] });
+    const deps = makeDeps({
+        host: makeHost({ agentManager: am }),
+        resolvePluginBundleMtime: async () => null,
+    });
+    const response = await run(deps, 'status');
+
+    t.true(response.ok);
+    t.is(response.data.plugin.bundleMtime, null);
+    t.is(response.data.companionStale, null);
 });
 
 test('status: host obecny i gotowy -> agenci i indeks wypełnione, plugin.id/version z hosta', async t => {
