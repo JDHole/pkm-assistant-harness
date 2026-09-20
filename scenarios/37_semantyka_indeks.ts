@@ -285,6 +285,35 @@ export default ({
       'Brak noty degradacji przy scope=memory — model dostałby ciche wyniki keyword udające semantykę.',
     );
 
+    // ── 4b. BEZ scope: agent główny z pamięcią szuka domyślnie we WŁASNEJ pamięci ──
+    // Kontrakt `search` od frontu A „Indeks semantyczny i search v2": vault tylko na jawne
+    // scope:"vault". Wynik musi mówić modelowi wprost, co przeszukano i jak poszerzyć zakres,
+    // inaczej pusty wynik z pamięci udawałby „nie ma takiej notatki w vaultcie".
+    const domyslny = await plugin.mcpClient.executeToolCall(
+      { id: 'harness-37-default', name: 'search', arguments: { query: FRAZA_PAMIECI, limit: 5 } },
+      'Tester',
+      { autonomy: 'edge' },
+    ) as FixturePayload;
+
+    assert(domyslny?.success === true, `search bez scope zwrócił błąd: ${JSON.stringify(domyslny).slice(0, 300)}`);
+    assert(
+      domyslny.scope === 'memory',
+      `search bez scope ma iść w pamięć agenta, a poszedł w scope=${domyslny.scope}.`,
+    );
+    const sciezkiDomyslne = (domyslny.results || []).map((r: FixturePayload) => String(r.path));
+    assert(
+      sciezkiDomyslne.some((p: string) => p.endsWith('reference_igla_pamieci.md')),
+      `search bez scope nie znalazł notatki pamięci. Wyniki: ${sciezkiDomyslne.join(', ') || '(brak)'}`,
+    );
+    assert(
+      typeof domyslny.scope_hint === 'string' && domyslny.scope_hint.includes('scope: "vault"'),
+      `Brak podpowiedzi poszerzenia zakresu przy domyślnym scope=memory. scope_hint=${JSON.stringify(domyslny.scope_hint)}`,
+    );
+    assert(
+      !('scope_hint' in pamiec),
+      'Jawne scope=memory nie powinno nieść scope_hint — podpowiedź jest tylko dla zakresu DOMYŚLNEGO.',
+    );
+
     // ── 5. Pętla domknęła się odpowiedzią ──
     const finalText = assertFinalText(result);
     assert(
