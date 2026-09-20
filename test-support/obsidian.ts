@@ -580,22 +580,21 @@ export class Plugin {
      * an Error."). `modules/cli/register.ts` pluginu na tym polega (każda z czterech komend leci
      * w OSOBNYM try/catch właśnie na wypadek duplikatu przy drugim `onload()` w tej samej sesji).
      *
-     * ⚠️ ARROW FUNCTION, NIE metoda prototypu — `modules/cli/register.ts` pluginu WYCIĄGA tę
-     * funkcję z hosta do lokalnej stałej (`const registerCliHandler = host.registerCliHandler`)
-     * i woła ją ODDZIELONĄ od `this` (`registerCliHandler(spec.id, ...)`, bez `host.`). Zweryfikowane
-     * empirycznie na `npm run selftest`: jako zwykła metoda `this` wewnątrz był `undefined` i
-     * KAŻDA z czterech komend fali 1 padała na starcie („Cannot read properties of undefined
-     * (reading '_registeredCliHandlers')", złapane przez własny try/catch rejestracji pluginu —
-     * boot nie wywracał się, ale zero komend realnie się rejestrowało). Pole strzałkowe ma `this`
-     * zamknięte leksykalnie, więc przeżywa destrukturyzację — tak samo musi działać realny
-     * Obsidian, inaczej ten sam wzór wywalałby się identycznie w produkcji.
+     * ⚠️ METODA PROTOTYPU CZYTAJĄCA `this`, NIE pole strzałkowe — tak jak w realnym Obsidianie,
+     * gdzie `Plugin.prototype.registerCliHandler` sięga po `this.app.cli`, `this.manifest.name`
+     * i `this.register(...)` (sprzątanie przy unload). Wołacz, który ODPINA metodę od hosta
+     * (`const f = host.registerCliHandler; f(...)`), dostaje w prawdziwej apce `TypeError` na
+     * KAŻDEJ komendzie — i pod harnessem ma dostać to samo. Pierwsza wersja `modules/cli/register.ts`
+     * miała dokładnie ten błąd (zero zarejestrowanych komend, wyjątek połknięty przez try/catch
+     * rejestracji); atrapa strzałkowa by go ZAMASKOWAŁA. Atrapa dopasowuje się do Obsidiana,
+     * nigdy do kodu pluginu.
      */
-    registerCliHandler = (command: string, description: string, flags: CliFlags | null, handler: CliHandler): void => {
+    registerCliHandler(command: string, description: string, flags: CliFlags | null, handler: CliHandler): void {
         if (this._registeredCliHandlers.has(command)) {
             throw new Error(`Command "${command}" is already registered.`);
         }
         this._registeredCliHandlers.set(command, { description, flags, handler });
-    };
+    }
     addChild<T>(c: T): T { this._children.push(c); return c; }
     removeChild<T>(c: T): T { return c; }
     load() {} onload() {} unload() {} onunload() {}

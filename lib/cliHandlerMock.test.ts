@@ -50,16 +50,16 @@ test('registerCliHandler: duplikat id RZUCA Error (kontrakt obsidian.d.ts), pier
     t.is(plugin._registeredCliHandlers.get('pkm-assistant:selftest')!.handler, pierwszy, 'Duplikat NADPISAŁ pierwszą rejestrację zamiast rzucić przed zapisem.');
 });
 
-test('registerCliHandler: działa ODDZIELONY od `this` (wzór modules/cli/register.ts pluginu: `const registerCliHandler = host.registerCliHandler`)', t => {
-    // Reprodukcja 1:1 tego, jak PRAWDZIWY kod pluginu woła tę metodę — `register.ts` wyciąga
-    // funkcję z hosta do lokalnej stałej i woła ją bez `host.` przed sobą. Jako zwykła metoda
-    // prototypu `this` wewnątrz wychodzi `undefined` (zweryfikowane na `npm run selftest`
-    // PRZED naprawą: wszystkie 4 komendy CLI padały na starcie) — to pole musi być arrow
-    // function, żeby przeżyć destrukturyzację.
+test('registerCliHandler: ODPIĘTY od `this` RZUCA TypeError, jak w realnym Obsidianie (atrapa nie maskuje błędu wołacza)', t => {
+    // Realny `Plugin.prototype.registerCliHandler` czyta `this.app.cli` / `this.manifest.name`,
+    // więc wołacz, który wyciąga metodę do lokalnej stałej i woła ją bez hosta, dostaje w apce
+    // `TypeError` na każdej komendzie. Pierwsza wersja `modules/cli/register.ts` pluginu miała
+    // dokładnie ten błąd; atrapa strzałkowa (z `this` zamkniętym leksykalnie) puściłaby go
+    // zielono przez selftest i scenariusze. Ten test pilnuje, żeby atrapa została wierna hostowi.
     const plugin = new Plugin(undefined, { id: 'pkm-assistant' });
     const registerCliHandler = plugin.registerCliHandler;
-    t.notThrows(() => registerCliHandler('pkm-assistant:agent-prompt', 'x', null, async () => 'x'));
-    t.is(plugin._registeredCliHandlers.size, 1);
+    t.throws(() => registerCliHandler('pkm-assistant:agent-prompt', 'x', null, async () => 'x'), { instanceOf: TypeError });
+    t.is(plugin._registeredCliHandlers.size, 0, 'Odpięte wywołanie nie ma prawa niczego zarejestrować.');
 });
 
 test('registerCliHandler: dwie RÓŻNE komendy współistnieją bez kolizji', t => {
