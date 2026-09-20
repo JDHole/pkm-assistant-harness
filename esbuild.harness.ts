@@ -127,6 +127,24 @@ function pluginTreePlugin(korzen: string): Plugin {
     };
 }
 
+/**
+ * Wariant `pluginTreePlugin` dla wtyczki-nosiciela (`companion/`, patrz `buildCompanion`
+ * niżej): TYLKO alias `@plugin/`, tak samo jak dla `run.js`/`scenarios.js` (te same źródła
+ * pluginu). `obsidian` NIE jest tu aliasowany na atrapę — `companion/` jest PRAWDZIWĄ wtyczką
+ * Obsidiana (CJS), a prawdziwy host dostarcza ten moduł sam w runtime; dlatego build companiona
+ * niżej dokłada `external: ['obsidian']`, dokładnie jak produkcyjny `esbuild.js` pluginu.
+ */
+function pluginAliasPlugin(korzen: string): Plugin {
+    return {
+        name: 'plugin-tree-companion',
+        setup(build) {
+            build.onResolve({ filter: /^@plugin\// }, args => ({
+                path: rozwiazWPluginie(korzen, args.path.slice(PREFIKS.length)),
+            }));
+        },
+    };
+}
+
 async function buildHarness(): Promise<void> {
     const korzenPluginu = pluginRoot();
     process.stdout.write(`[harness/build] plugin: ${korzenPluginu}\n`);
@@ -171,7 +189,52 @@ async function buildHarness(): Promise<void> {
     await writeFile(path.join(HARNESS_DIR, 'dist', 'package.json'), '{\n  "type": "module"\n}\n', 'utf8');
 }
 
-buildHarness().catch((err: unknown) => {
+/**
+ * Build wtyczki-nosiciela `companion/` -> `dist/companion/main.js` (`npm run build:companion`).
+ * WYWOŁANIE ODDZIELNE od `buildHarness()` (nie ten sam `entryPoints`): format i traktowanie
+ * `obsidian` są INNE - to prawdziwa wtyczka Obsidiana (CJS, `obsidian` zostaje POZA bundlem, bo
+ * host dostarcza go w runtime), nie node'owy skrypt harnessu (ESM, `obsidian` to LOKALNA
+ * atrapa). Alias `@plugin/` działa tak samo jak dla `run.js`/`scenarios.js` - te same źródła
+ * pluginu, `pluginRoot()` rozstrzyga je identycznie.
+ */
+async function buildCompanion(): Promise<void> {
+    const korzenPluginu = pluginRoot();
+    const outdir = path.join(HARNESS_DIR, 'dist', 'companion');
+    process.stdout.write(`[harness/build] companion, plugin: ${korzenPluginu}\n`);
+
+    await esbuild.build({
+        entryPoints: { main: path.join(HARNESS_DIR, 'companion', 'main.ts') },
+        outdir,
+        bundle: true,
+        platform: 'node',
+        format: 'cjs',
+        target: 'es2022',
+        charset: 'utf8',
+        minify: false,
+        keepNames: true,
+        sourcemap: false,
+        logLevel: 'warning',
+        // Runtime hosta, nie paczka z npm - musi zostać POZA bundlem, inaczej wciągnęlibyśmy
+        // całego Obsidiana (dokładnie jak `external: ['obsidian']` w produkcyjnym `esbuild.js`
+        // pluginu).
+        external: ['obsidian'],
+        plugins: [pluginAliasPlugin(korzenPluginu), cssImportPlugin, markdownImportPlugin],
+    });
+
+    fs.copyFileSync(
+        path.join(HARNESS_DIR, 'companion', 'manifest.json'),
+        path.join(outdir, 'manifest.json'),
+    );
+
+    const bundlePath = path.join(outdir, 'main.js');
+    const bytes = fs.statSync(bundlePath).size;
+    process.stdout.write(`[harness/build] companion gotowy: dist/companion/main.js (${bytes} B) + manifest.json\n`);
+}
+
+const tryb = process.argv.includes('--companion') ? 'companion' : 'harness';
+const bieg = tryb === 'companion' ? buildCompanion() : buildHarness();
+
+bieg.catch((err: unknown) => {
     const message = err instanceof Error ? (err.stack ?? err.message) : String(err);
     process.stderr.write(`\n[harness/build] BLAD budowania bundla:\n${message}\n`);
     process.exit(1);

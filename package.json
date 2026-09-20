@@ -9,6 +9,7 @@
   },
   "scripts": {
     "build": "node esbuild.harness.ts",
+    "build:companion": "node esbuild.harness.ts --companion",
     "harness": "node esbuild.harness.ts && node dist/run.js --dry-boot",
     "selftest": "node esbuild.harness.ts && node dist/run.js --offline --agent Tester --prompt \"Przeczytaj Notatki/powitanie.md i streść w jednym zdaniu.\"",
     "scenarios": "node esbuild.harness.ts && node dist/scenarios.js",
@@ -34,7 +35,8 @@
   "ava": {
     "files": [
       "lib/*.test.ts",
-      "scenarios/*.test.ts"
+      "scenarios/*.test.ts",
+      "companion/**/*.test.ts"
     ],
     "extensions": {
       "ts": "module"

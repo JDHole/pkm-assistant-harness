@@ -1,0 +1,9 @@
+{
+  "id": "pkm-assistant-dev",
+  "name": "PKM Assistant Dev",
+  "version": "0.1.0",
+  "minAppVersion": "1.12.2",
+  "description": "Private developer CLI for the PKM Assistant plugin. Not for distribution.",
+  "author": "JDHole",
+  "isDesktopOnly": true
+}
