@@ -677,3 +677,16 @@ test('status NIGDY nie oddaje not_ready, nawet bez hosta w ogóle', async t => {
     const response = await run(deps, 'status');
     t.true(response.ok);
 });
+
+test('wyjątek rzucony przez resolveHost() w komendzie wymagającej gotowości (nie status) -> internal, handler nie rzuca', async t => {
+    const deps = makeDeps({ hostError: new Error('resolveHost padł w środku runGuardedReady') });
+    const response = await run(deps, 'selftest');
+
+    t.deepEqual(response, {
+        ok: false,
+        command: 'pkm-assistant-dev:selftest',
+        verified: false,
+        effect: 'unknown',
+        error: { code: 'internal', message: 'resolveHost padł w środku runGuardedReady' },
+    });
+});
