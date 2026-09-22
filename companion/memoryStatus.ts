@@ -7,15 +7,25 @@
  * pluginie WYŁĄCZNIE dla tego jednego wołacza (CLI) i znika stamtąd wraz z wyprowadzką CLI do
  * tej wtyczki - patrz `modules/memory/CLAUDE.md` (gotcha "jedno liczydło progów konsolidacji").
  *
- * Progi (`resolveConsolidationThresholds`/`shouldTriggerConsolidation`) i plan (`buildPlan`)
- * WCIĄŻ idą runtime'owym importem z pluginu, bezpośrednio z lekkich,
- * czystych plików (`modules/memory/consolidationStatus.js`, `modules/memory/ConsolidationRun.js`,
- * NIE przez barrel `modules/memory/index.js` - ten ciągnie całe drzewo modułu). To jest JEDNO
- * liczydło współdzielone z produkcyjnym triggerem (`SaveSessionWorkflow._shouldTriggerArchive`) -
- * kopiowanie tej logiki tutaj byłoby dokładnie tym, przed czym ostrzega `modules/memory/CLAUDE.md`.
+ * Progi (`resolveConsolidationThresholds`/`shouldTriggerConsolidation`) i plan auto-triggera
+ * (`planAutoConsolidation`) oraz plan konsolidacji (`buildPlan`) WCIĄŻ idą runtime'owym importem
+ * z pluginu, bezpośrednio z lekkich, czystych plików (`modules/memory/consolidationStatus.js`,
+ * `modules/memory/ConsolidationRun.js`, NIE przez barrel `modules/memory/index.js` - ten ciągnie
+ * całe drzewo modułu). To jest JEDNO liczydło współdzielone z produkcyjnym triggerem
+ * (`SaveSessionWorkflow.applyDecision`, przez jego prywatny `_planAutoConsolidation` -> import
+ * `planAutoConsolidation`) - kopiowanie tej logiki tutaj byłoby dokładnie tym, przed czym
+ * ostrzega `modules/memory/CLAUDE.md`.
+ *
+ * ⚠️ Auto-konsolidacja jest OPCJONALNA (werdykt właściciela, 2026-09-20/22): produkcja liczy DWIE
+ * różne rzeczy, i to repo pokazuje je OSOBNO, żeby CLI przestało kłamać: `thresholdsExceeded`
+ * (stara semantyka - sam próg przebity, `shouldTriggerConsolidation`, BEZ WZGLĘDU na wyłączniki)
+ * kontra `wouldTrigger` (produkcyjna decyzja `SaveSessionWorkflow.applyDecision` po zapisie sesji -
+ * `planAutoConsolidation`, respektuje `memoryV3AutoConsolidateSessions`/`Brain`, domyślnie OBA
+ * WYŁĄCZONE). Przy defaultowych ustawieniach `thresholdsExceeded` może być `true`, a
+ * `wouldTrigger` `false` - to jest ZAMIERZONE, nie błąd diagnostyki.
  *
  * ⚠️ "JEDNO liczydło" jest prawdą na poziomie ŹRÓDEŁ i CHWILI BUILDA tej wtyczki, NIE w runtime:
- * `dist/companion/main.js` ma te dwie funkcje WKOMPILOWANE (esbuild bundluje `@plugin/...` ze
+ * `dist/companion/main.js` ma te funkcje WKOMPILOWANE (esbuild bundluje `@plugin/...` ze
  * ŹRÓDEŁ, nie linkuje do `dist/main.js` pluginu w vaulcie) - jeśli plugin zostanie przebudowany
  * PÓŹNIEJ (nowa formuła progów), TA wtyczka o tym nie wie, dopóki ktoś nie odpali
  * `npm run build:companion` ponownie. `StatusData.companionStale` (`cli/commands.ts`, K3)
@@ -32,6 +42,7 @@
  */
 
 import {
+    planAutoConsolidation,
     resolveConsolidationThresholds,
     shouldTriggerConsolidation,
 } from '@plugin/modules/memory/consolidationStatus.js';
@@ -42,15 +53,15 @@ import type { MemoryState } from '@plugin/modules/memory/StateManager.js';
 
 // ── Kontrakt danych `memory-status` - WŁASNOŚĆ tej wtyczki, nie pluginu ──────────────────────
 //
-// W pluginie zostaje wyłącznie to, czego używa jego własny silnik: dwie czyste funkcje progów
-// (`resolveConsolidationThresholds`, `shouldTriggerConsolidation` - woła je
-// `SaveSessionWorkflow._shouldTriggerArchive`). Kształt statusu, źródło stanu i próg dedupu dla
-// planu nie mają w pluginie żadnego czytelnika, więc mieszkają TU. Typy wejść wyprowadzone z
-// sygnatury funkcji pluginu (`Parameters`/`ReturnType`), nie przepisane - zmiana po stronie
-// pluginu ma wywalić typecheck harnessu, a nie rozjechać się po cichu.
+// W pluginie zostaje wyłącznie to, czego używa jego własny silnik: czyste funkcje progów i planu
+// auto-triggera (`resolveConsolidationThresholds`, `shouldTriggerConsolidation`,
+// `planAutoConsolidation` - ostatnią woła `SaveSessionWorkflow.applyDecision`). Kształt statusu i
+// źródło stanu nie mają w pluginie żadnego czytelnika, więc mieszkają TU. Próg dedupu podawany do
+// `buildPlan` NIE jest już własną formułą tej wtyczki - liczy go `resolveConsolidationThresholds`
+// (`thresholds.brainNotesLimit`), dokładnie jak produkcyjny `consolidationRunner.ts:610`. Typy
+// wejść wyprowadzone z sygnatury funkcji pluginu (`Parameters`/`ReturnType`), nie przepisane -
+// zmiana po stronie pluginu ma wywalić typecheck harnessu, a nie rozjechać się po cichu.
 
-type ThresholdState = Parameters<typeof resolveConsolidationThresholds>[0];
-type ThresholdSettings = Parameters<typeof resolveConsolidationThresholds>[1];
 type BrainNotesLimitSource = ReturnType<typeof resolveConsolidationThresholds>['brainNotesLimitSource'];
 
 /** Skąd pochodzą liczniki stanu: z pliku, z defaultów (pliku nie ma) albo z defaultów (plik nieczytelny). */
@@ -70,23 +81,14 @@ export interface ConsolidationStatus {
         stateActive: number;
     };
     summaries: { uncoveredL1: number; uncoveredL2: number; batchSize: number };
-    /** Ta sama decyzja co produkcyjny trigger (`shouldTriggerConsolidation` z pluginu). */
+    /** Stara semantyka: sam próg (sesje LUB notatki) przebity, BEZ WZGLĘDU na wyłączniki auto-konsolidacji (`shouldTriggerConsolidation` z pluginu). */
+    thresholdsExceeded: boolean;
+    /** Produkcyjna decyzja `SaveSessionWorkflow.applyDecision` po zapisie sesji (`planAutoConsolidation` z pluginu) - respektuje oba wyłączniki, domyślnie WYŁĄCZONE. */
     wouldTrigger: boolean;
+    /** Które gałęzie planu auto-triggera produkcja by wpuściła (`planAutoConsolidation(...).include`) - wymaga wyłącznika WŁĄCZONEGO *i* progu PRZEBITEGO dla danej gałęzi. */
+    include: { sessions: boolean; dedup: boolean };
     /** Kroki z `buildPlan` pluginu, w kolejności, tylko `kind`. */
     plan: Array<{ kind: string }>;
-}
-
-/**
- * Próg dedupu podawany do `buildPlan` - formuła 1:1 z produkcyjnym
- * `modules/chat/consolidationRunner.ts:startConsolidationRun` (baza z
- * `memoryV3BrainNotesThreshold`, domyślnie 20; `.state.json.brain_notes_limit` ją nadpisuje).
- * CELOWO inna niż `resolveConsolidationThresholds`: tamta ma jeszcze fallback na
- * `archiveBrainNotesThreshold`, którego trigger przebiegu nie zna. Dwie funkcje odpowiadają na
- * dwa różne pytania - nie scalaj ich. Przy zmianie formuły w `consolidationRunner.ts` popraw tutaj.
- */
-export function resolvePlanDedupThreshold(state: ThresholdState, settings: ThresholdSettings): number {
-    const base = Number(settings?.memoryV3BrainNotesThreshold) || 20;
-    return Number(state?.brain_notes_limit) || base;
 }
 
 /** Wycinek `AgentMemory`, jakiego potrzebuje własny, lekki odczyt `.state.json`. */
@@ -271,10 +273,12 @@ export async function getConsolidationStatus(agentMemory: AgentMemory): Promise<
         archiveCount: uncoveredArchive.length,
         batchSize: thresholds.batchSize,
         brainNotesCount,
-        dedupThreshold: resolvePlanDedupThreshold(state, agentMemory.settings),
+        dedupThreshold: thresholds.brainNotesLimit,
         l1Count: uncoveredL1.length,
         l2Count: uncoveredL2.length,
     });
+
+    const autoPlan = planAutoConsolidation(state, brainNotesCount, agentMemory.settings);
 
     return {
         agent: agentMemory.agentName,
@@ -298,7 +302,9 @@ export async function getConsolidationStatus(agentMemory: AgentMemory): Promise<
             uncoveredL2: uncoveredL2.length,
             batchSize: thresholds.batchSize,
         },
-        wouldTrigger: shouldTriggerConsolidation(state, brainNotesCount, agentMemory.settings),
+        thresholdsExceeded: shouldTriggerConsolidation(state, brainNotesCount, agentMemory.settings),
+        wouldTrigger: autoPlan.trigger,
+        include: autoPlan.include,
         plan: plan.map(step => ({ kind: step.kind })),
     };
 }

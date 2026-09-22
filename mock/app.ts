@@ -45,6 +45,37 @@ export function createMockApp(vaultRoot: string): Runtime {
   let vault: Runtime; // forward ref dla markDirty
   const markDirty = () => { if (vault) vault._treeDirty = true; };
 
+  // `vault.process` (Obsidian: "Atomically read, modify, and save the contents") — łańcuch
+  // obietnic PER ŚCIEŻKA (kluczowany `absOf`, żeby różne zapisy tej samej ścieżki, np. z/bez
+  // wiodącego slasha, trafiały w TEN SAM zamek). Każde kolejne wywołanie na tej samej ścieżce
+  // CZEKA na poprzednie i dostaje AKTUALNĄ treść (tę, którą poprzednie już zapisało) — bez tego
+  // równoległe `process()` na jednym pliku czytały tę samą starą treść i nadpisywały się
+  // nawzajem (lost update, patrz `modules/tools/WriteTool.ts` pluginu, które liczy
+  // patch/append/prepend WEWNĄTRZ callbacka `process` właśnie dlatego, że kontrakt Obsidiana
+  // obiecuje atomowość). `.catch(() => {})` na ogniwie łańcucha jest WYŁĄCZNIE do celów
+  // szeregowania — nie połyka błędu dla wołającego: `run` (co zwraca ta funkcja i co ląduje w
+  // mapie) nie ma tego `.catch`, więc odrzucenie WŁASNEGO `fn`/zapisu nadal wraca do wołającego,
+  // tylko kolejne wywołanie na tej samej ścieżce nie zostaje zablokowane na zawsze cudzym
+  // odrzuceniem. Wpis w mapie sprzątany PO ustabilizowaniu się (o ile nikt nowszy go nie
+  // podmienił w międzyczasie) — inaczej mapa rosłaby bez końca przy długich biegach.
+  const processChains = new Map<string, Promise<unknown>>();
+
+  const processFile = (p: string, fn: Runtime): Promise<unknown> => {
+    const key = absOf(p);
+    const prior = processChains.get(key) || Promise.resolve();
+    const run = prior.catch(() => {}).then(async () => {
+      const content = await adapter.read(p);
+      const next = fn(content);
+      await adapter.write(p, next);
+      return next;
+    });
+    processChains.set(key, run);
+    run.catch(() => {}).finally(() => {
+      if (processChains.get(key) === run) processChains.delete(key);
+    });
+    return run;
+  };
+
   // ── DataAdapter (fs) — kontrakt z LogFileSink + AgentMemory ──
   const adapter: Runtime = {
     getName() { return path.basename(root); },
@@ -215,10 +246,7 @@ export function createMockApp(vaultRoot: string): Runtime {
 
     async process(file: Runtime, fn: Runtime) {
       const p = typeof file === 'string' ? file : file.path;
-      const content = await adapter.read(p);
-      const next = fn(content);
-      await adapter.write(p, next);
-      return next;
+      return processFile(p, fn);
     },
 
     async delete(file: Runtime, _force = false) {
