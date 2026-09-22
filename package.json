@@ -14,8 +14,9 @@
     "selftest": "node esbuild.harness.ts && node dist/run.js --offline --agent Tester --prompt \"Przeczytaj Notatki/powitanie.md i streść w jednym zdaniu.\"",
     "scenarios": "node esbuild.harness.ts && node dist/scenarios.js",
     "scenarios:live": "node esbuild.harness.ts && node dist/scenarios.js --live",
-    "test": "npx ava --verbose",
-    "typecheck": "tsc --noEmit"
+    "test": "node --test tools/graf/*.test.mjs && npx ava --verbose",
+    "typecheck": "tsc --noEmit",
+    "test:graf": "node --test tools/graf/*.test.mjs"
   },
   "repository": {
     "type": "git",

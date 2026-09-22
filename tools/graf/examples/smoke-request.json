@@ -1,0 +1,52 @@
+{
+  "data_root": "C:/graf-data",
+  "run_id": "acceptance-smoke",
+  "task": "Run the requested offline checks and have an independent reviewer inspect the evidence.",
+  "acceptance_criteria": ["The test command has a saved result.", "A different reviewer identity records a verdict."],
+  "repo": "C:/work/example-repo",
+  "base_commit": "0123456789abcdef0123456789abcdef01234567",
+  "variant": "B",
+  "decision_mode": "off",
+  "context": {
+    "max_input_bytes": 48000,
+    "observed_context_limit_tokens": 192864,
+    "token_estimate_method": "utf8_bytes_div_3_estimated",
+    "mandatory": [],
+    "candidates": []
+  },
+  "nodes": [
+    {
+      "node_id": "test",
+      "kind": "verification",
+      "goal": "Run offline tests and save exact output as evidence.",
+      "depends_on": [],
+      "required": true,
+      "input_refs": [],
+      "output_contract": {"type": "test-result"},
+      "acceptance": ["A result file is saved."],
+      "write_scope": "none",
+      "executor": "gpt-5.6-terra",
+      "model": "gpt-5.6-terra",
+      "effort": "medium",
+      "timeout_seconds": 900,
+      "max_attempts": 1
+    },
+    {
+      "node_id": "review",
+      "kind": "review",
+      "goal": "Independently review the test evidence.",
+      "depends_on": ["test"],
+      "required": true,
+      "input_refs": [],
+      "output_contract": {"type": "review-verdict"},
+      "acceptance": ["Reviewer identity differs from implementer."],
+      "write_scope": "read-only",
+      "executor": "gpt-5.6-sol",
+      "model": "gpt-5.6-sol",
+      "effort": "high",
+      "timeout_seconds": 900,
+      "max_attempts": 1,
+      "reviewer_for": "test"
+    }
+  ]
+}
