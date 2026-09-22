@@ -36,7 +36,8 @@
     "files": [
       "lib/*.test.ts",
       "scenarios/*.test.ts",
-      "companion/**/*.test.ts"
+      "companion/**/*.test.ts",
+      "mock/*.test.ts"
     ],
     "extensions": {
       "ts": "module"
