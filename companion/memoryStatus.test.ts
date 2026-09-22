@@ -1,6 +1,6 @@
 import test from 'ava';
 import { AgentMemory } from '@plugin/modules/memory/AgentMemory.js';
-import { getConsolidationStatus, resolvePlanDedupThreshold } from './memoryStatus.js';
+import { getConsolidationStatus } from './memoryStatus.js';
 
 /**
  * PRZENIESIONE z `modules/memory/consolidationStatus.test.ts` pluginu - sekcja
@@ -11,15 +11,28 @@ import { getConsolidationStatus, resolvePlanDedupThreshold } from './memoryStatu
  * ma `import type { Setting } from 'obsidian'`, co znika przy transpilacji), więc żaden przypadek
  * nie musiał zejść na krok scenariusza.
  *
- * `resolvePlanDedupThreshold` jest WŁASNOŚCIĄ tej wtyczki (w pluginie nie ma czytelnika) - jego
- * testy są na końcu pliku. Testy PURE funkcji progów (`resolveConsolidationThresholds`,
- * `shouldTriggerConsolidation`) oraz testy `StateManager.peek()` bezpośrednio NIE są tu
- * powtórzone - ta logika zostaje w pluginie NIEZMIENIONA (importowana runtime'owo z
+ * `resolvePlanDedupThreshold` (WŁASNOŚĆ tej wtyczki, stara, osobna formuła progu dedupu) jest
+ * USUNIĘTY (naprawa auto-konsolidacji opcjonalnej, 2026-09-22) - próg dedupu podawany do
+ * `buildPlan` jest teraz DOKŁADNIE `resolveConsolidationThresholds(...).brainNotesLimit`, jedno
+ * liczydło z produkcyjnym `consolidationRunner.ts:610`. Sekcja "próg dedupu" niżej sprawdza to
+ * POŚREDNIO przez `status.brainNotes.limit` (to samo pole `thresholds.brainNotesLimit`, którego
+ * `getConsolidationStatus` używa i do wystawienia limitu, i jako `dedupThreshold` w `buildPlan`) -
+ * nie ma już osobnej, companionowej funkcji do testowania wprost.
+ *
+ * Testy PURE funkcji progów (`resolveConsolidationThresholds`, `shouldTriggerConsolidation`,
+ * `planAutoConsolidation`) oraz testy `StateManager.peek()` bezpośrednio NIE są tu powtórzone -
+ * ta logika zostaje w pluginie NIEZMIENIONA (importowana runtime'owo z
  * `@plugin/modules/memory/consolidationStatus.js`/`ConsolidationRun.js`, patrz nagłówek
  * `memoryStatus.ts`) i jest już pokryta testami w repo pluginu; `StateManager.peek()` znika
  * z pluginu wraz z tą wyprowadzką i nie ma czego tu testować bezpośrednio - jego zastępstwo
  * (`peekState`, prywatne w `memoryStatus.ts`) jest sprawdzane POŚREDNIO, przez zachowanie
  * `getConsolidationStatus` (`state.source`), dokładnie jak chce specyfikacja zadania.
+ *
+ * `thresholdsExceeded` (stara semantyka `shouldTriggerConsolidation`, BEZ WZGLĘDU na wyłączniki)
+ * i `wouldTrigger`/`include` (produkcyjna decyzja `planAutoConsolidation` - respektuje oba
+ * wyłączniki auto-konsolidacji, domyślnie WYŁĄCZONE) mają WŁASNĄ sekcję testów niżej - to jest
+ * kontrakt danych TEJ wtyczki (kształt statusu), więc zostaje tu, integracyjnie, tak jak reszta
+ * pliku.
  */
 
 function makeVault(initialFiles: Record<string, string> = {}, initialFolders: string[] = []) {
@@ -139,7 +152,9 @@ test('getConsolidationStatus: świeży agent bez plików - defaulty, plan pusty,
             stateActive: 0,
         },
         summaries: { uncoveredL1: 0, uncoveredL2: 0, batchSize: 5 },
+        thresholdsExceeded: false,
         wouldTrigger: false,
+        include: { sessions: false, dedup: false },
         plan: [],
     });
 });
@@ -160,7 +175,7 @@ test('getConsolidationStatus: 20 notatek na limicie 20 -> overLimit=false', asyn
     t.false(status.wouldTrigger);
 });
 
-test('getConsolidationStatus: 21 notatek nad limitem 20 -> overLimit=true i wouldTrigger=true', async t => {
+test('getConsolidationStatus: 21 notatek nad limitem 20 -> overLimit=true, thresholdsExceeded=true, ale wouldTrigger=false (auto-konsolidacja domyślnie WYŁĄCZONA)', async t => {
     const files: Record<string, string> = {};
     for (let i = 1; i <= 21; i++) files[`${BASE}/brain/reference_${i}.md`] = note(`Notatka ${i}`);
     const { vault } = makeVault(files);
@@ -170,13 +185,15 @@ test('getConsolidationStatus: 21 notatek nad limitem 20 -> overLimit=true i woul
 
     t.is(status.brainNotes.count, 21);
     t.true(status.brainNotes.overLimit);
-    t.true(status.wouldTrigger);
-    t.true(status.plan.some(step => step.kind === 'dedup'));
+    t.true(status.thresholdsExceeded);
+    t.false(status.wouldTrigger, 'domyślne ustawienia -> oba wyłączniki auto-konsolidacji OFF, produkcja by nie odpaliła');
+    t.deepEqual(status.include, { sessions: false, dedup: false });
+    t.true(status.plan.some(step => step.kind === 'dedup'), 'plan dedup nadal budowany - buildPlan nie zna wyłączników, to osobna decyzja od trigera');
 });
 
 // ── granica: 10 sesji zarchiwizowanych ─────────────────────────────────────────────────
 
-test('getConsolidationStatus: 10 zarchiwizowanych sesji przy progu 10 -> overThreshold=true i wouldTrigger=true', async t => {
+test('getConsolidationStatus: 10 zarchiwizowanych sesji przy progu 10 -> overThreshold=true, thresholdsExceeded=true, wouldTrigger=false (auto-konsolidacja domyślnie WYŁĄCZONA)', async t => {
     const state = JSON.stringify({ active_sessions: [], archived_since_last_consolidation: 10, last_archive_at: '2026-09-01T00:00:00.000Z' });
     const { vault } = makeVault({ [`${BASE}/.state.json`]: state });
     const memory = new AgentMemory(vault, 'Agent');
@@ -188,7 +205,8 @@ test('getConsolidationStatus: 10 zarchiwizowanych sesji przy progu 10 -> overThr
     t.is(status.sessions.archivedSinceLastConsolidation, 10);
     t.is(status.sessions.threshold, 10);
     t.true(status.sessions.overThreshold);
-    t.true(status.wouldTrigger);
+    t.true(status.thresholdsExceeded);
+    t.false(status.wouldTrigger, 'domyślne ustawienia -> oba wyłączniki auto-konsolidacji OFF, produkcja by nie odpaliła');
 });
 
 // ── trzy źródła limitSource: default (patrz test wyżej) / settings / agent_state ──────────
@@ -470,22 +488,63 @@ test('getConsolidationStatus: .state.json z brain_notes_limit jako LICZBĄ -> pr
     t.is(status.brainNotes.limitSource, 'agent_state');
 });
 
-// ── resolvePlanDedupThreshold - formuła produkcyjnego `consolidationRunner.startConsolidationRun`,
-//    CELOWO inna niż `resolveConsolidationThresholds` pluginu (brak fallbacku na archiveBrainNotesThreshold). ──
+// ── próg dedupu - dawniej `resolvePlanDedupThreshold` (formuła WŁASNA tej wtyczki, bez podłogi),
+//    DZIŚ dokładnie `resolveConsolidationThresholds(...).brainNotesLimit` - jedno liczydło z
+//    produkcyjnym `consolidationRunner.ts:610`. Sprawdzane pośrednio przez `status.brainNotes.limit`
+//    (to samo pole, którego `getConsolidationStatus` używa jako `dedupThreshold` w `buildPlan`) -
+//    nie ma już osobnej funkcji companiona do wołania wprost. ──
 
-test('resolvePlanDedupThreshold: bez state/settings -> domyślne 20 (jak produkcja)', t => {
-    t.is(resolvePlanDedupThreshold(null, null), 20);
+test('próg dedupu: state.brain_notes_limit=30 / ustawienie memoryV3BrainNotesThreshold=50 -> 50 (podłoga: ustawienie WYŻSZE wygrywa, nie stan)', async t => {
+    const state = JSON.stringify({ active_sessions: [], archived_since_last_consolidation: 0, last_archive_at: null, brain_notes_limit: 30 });
+    const { vault } = makeVault({ [`${BASE}/.state.json`]: state });
+    const memory = new AgentMemory(vault, 'Agent', { memoryV3BrainNotesThreshold: 50 });
+
+    const status = await getConsolidationStatus(memory);
+
+    t.is(status.brainNotes.limit, 50);
+    t.is(status.brainNotes.limitSource, 'settings');
 });
 
-test('resolvePlanDedupThreshold: memoryV3BrainNotesThreshold z ustawień nadpisuje domyślne 20', t => {
-    t.is(resolvePlanDedupThreshold(null, { memoryV3BrainNotesThreshold: 35 }), 35);
+test('próg dedupu: ustawienie memoryV3BrainNotesThreshold=-5 (bez state) -> 20 (wartość ujemna traktowana jak nieustawiona, spada na domyślne)', async t => {
+    const { vault } = makeVault();
+    const memory = new AgentMemory(vault, 'Agent', { memoryV3BrainNotesThreshold: -5 });
+
+    const status = await getConsolidationStatus(memory);
+
+    t.is(status.brainNotes.limit, 20);
+    t.is(status.brainNotes.limitSource, 'default');
 });
 
-test('resolvePlanDedupThreshold: archiveBrainNotesThreshold jest IGNOROWANY - to jest różnica względem resolveConsolidationThresholds', t => {
-    t.is(resolvePlanDedupThreshold(null, { archiveBrainNotesThreshold: 50 }), 20);
+// ── thresholdsExceeded / wouldTrigger / include - auto-konsolidacja opcjonalna (naprawa 2026-09-22):
+//    `thresholdsExceeded` = stary `shouldTriggerConsolidation` (sam próg, bez wyłączników);
+//    `wouldTrigger`/`include` = produkcyjny `planAutoConsolidation` (wyłączniki + próg RAZEM). ──
+
+test('getConsolidationStatus: domyślne ustawienia, 12 zarchiwizowanych sesji (próg 10) i 25 notatek (limit 20) -> thresholdsExceeded=true, wouldTrigger=false (oba wyłączniki auto-konsolidacji domyślnie OFF)', async t => {
+    const state = JSON.stringify({ active_sessions: [], archived_since_last_consolidation: 12, last_archive_at: null });
+    const files: Record<string, string> = { [`${BASE}/.state.json`]: state };
+    for (let i = 1; i <= 25; i++) files[`${BASE}/brain/reference_${i}.md`] = note(`Notatka ${i}`);
+    const { vault } = makeVault(files);
+    const memory = new AgentMemory(vault, 'Agent');
+
+    const status = await getConsolidationStatus(memory);
+
+    t.is(status.sessions.archivedSinceLastConsolidation, 12);
+    t.is(status.brainNotes.count, 25);
+    t.true(status.thresholdsExceeded);
+    t.false(status.wouldTrigger);
+    t.deepEqual(status.include, { sessions: false, dedup: false });
 });
 
-test('resolvePlanDedupThreshold: state.brain_notes_limit nadpisuje bazę (ustawienia LUB domyślne 20)', t => {
-    t.is(resolvePlanDedupThreshold({ brain_notes_limit: 40 }, { memoryV3BrainNotesThreshold: 35 }), 40);
-    t.is(resolvePlanDedupThreshold({ brain_notes_limit: 40 }, null), 40);
+test('getConsolidationStatus: memoryV3AutoConsolidateSessions=true (brain OFF), progi tak jak wyżej -> wouldTrigger=true, include={sessions:true, dedup:false}', async t => {
+    const state = JSON.stringify({ active_sessions: [], archived_since_last_consolidation: 12, last_archive_at: null });
+    const files: Record<string, string> = { [`${BASE}/.state.json`]: state };
+    for (let i = 1; i <= 25; i++) files[`${BASE}/brain/reference_${i}.md`] = note(`Notatka ${i}`);
+    const { vault } = makeVault(files);
+    const memory = new AgentMemory(vault, 'Agent', { memoryV3AutoConsolidateSessions: true });
+
+    const status = await getConsolidationStatus(memory);
+
+    t.true(status.thresholdsExceeded);
+    t.true(status.wouldTrigger);
+    t.deepEqual(status.include, { sessions: true, dedup: false }, 'brain nadal OFF -> gałąź notatek nie wchodzi do planu, mimo że próg notatek też jest przebity');
 });

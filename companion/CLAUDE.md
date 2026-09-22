@@ -55,7 +55,11 @@ infrastruktura harnessu, nie runtime wtyczki) i entry esbuilda (`esbuild.harness
   barrelu - jedyny konsument spoza `register.ts` to testy tego samego folderu.
 - `hostPlugin.ts` eksportuje `resolveHost(app)`, `ResolvedHost`, `CliAgentManager`, `CliIndexStatus`,
   `resolvePluginBundleMtime(app)` (K3 - ISO mtime bundla HOSTA w vaulcie, `null` gdy nie da się ustalić).
-- `memoryStatus.ts` eksportuje `getConsolidationStatus(agentMemory)`, `resolvePlanDedupThreshold`.
+- `memoryStatus.ts` eksportuje `getConsolidationStatus(agentMemory)` - status niesie osobno
+  `thresholdsExceeded` (stara semantyka `shouldTriggerConsolidation` - sam próg, bez wyłączników)
+  i `wouldTrigger`/`include` (produkcyjna decyzja `planAutoConsolidation`, respektuje oba
+  wyłączniki auto-konsolidacji, domyślnie WYŁĄCZONE - patrz gotcha "auto-konsolidacja opcjonalna"
+  niżej). `resolvePlanDedupThreshold` USUNIĘTE 2026-09-22 (patrz sekcja "Zależności z pluginu").
 - `buildInfo.ts` eksportuje `COMPANION_BUILT_AT`/`COMPANION_PLUGIN_COMMIT`/`COMPANION_PLUGIN_TREE_DIRTY`
   (K3, patrz gotcha "dwa bundle - jedno liczydło" niżej).
 
@@ -141,11 +145,14 @@ alias `@plugin/`).
 **Runtime'owe importy TYLKO z lekkich, czystych plików** (bundle wtyczki ma zostać mały - patrz
 rozmiar w raporcie zadania, ~52 KB):
 - `@plugin/modules/memory/consolidationStatus.js` - `resolveConsolidationThresholds`,
-  `shouldTriggerConsolidation` (JEDNO liczydło progów konsolidacji, współdzielone z produkcyjnym
-  `SaveSessionWorkflow._shouldTriggerArchive` - NIE kopiować tej logiki). Wszystko inne z tamtego
-  pliku jest WŁASNOŚCIĄ tej wtyczki i mieszka w `memoryStatus.ts`: typy `ConsolidationStatus` /
-  `MemoryStateSource` oraz `resolvePlanDedupThreshold` (formuła 1:1 z
-  `modules/chat/consolidationRunner.ts` pluginu - w pluginie nie miała żadnego czytelnika),
+  `shouldTriggerConsolidation`, `planAutoConsolidation` (JEDNO liczydło progów konsolidacji i
+  planu auto-triggera, współdzielone z produkcyjnym `SaveSessionWorkflow.applyDecision` przez
+  jej prywatny `_planAutoConsolidation` - NIE kopiować tej logiki). Wszystko inne z tamtego pliku
+  jest WŁASNOŚCIĄ tej wtyczki i mieszka w `memoryStatus.ts`: typy `ConsolidationStatus` /
+  `MemoryStateSource`. Próg dedupu podawany do `buildPlan` NIE jest już osobną formułą tej
+  wtyczki (dawne `resolvePlanDedupThreshold`, USUNIĘTE 2026-09-22) - to dziś dokładnie
+  `resolveConsolidationThresholds(...).brainNotesLimit`, jedno liczydło z produkcyjnym
+  `modules/chat/consolidationRunner.ts:610`,
 - `@plugin/modules/memory/ConsolidationRun.js` - `buildPlan`,
 - `@plugin/core/selftest.js` - `buildSelfTestReport` (dynamiczny `await import(...)` w `main.ts`).
 
@@ -184,6 +191,21 @@ wolno) importować całych klas jako wartości.
 
 ## Gotchas
 
+- ⚠️ **Auto-konsolidacja opcjonalna (naprawa 2026-09-22) - `memory-status` dawniej KŁAMAŁ.**
+  Plugin dodał na main dwa wyłączniki auto-konsolidacji (`memoryV3AutoConsolidateSessions`/
+  `memoryV3AutoConsolidateBrain`, domyślnie OBA `false`) i `planAutoConsolidation` jako
+  produkcyjne źródło prawdy dla `SaveSessionWorkflow.applyDecision` - `getConsolidationStatus`
+  tej wtyczki liczyła `wouldTrigger` starym `shouldTriggerConsolidation` (który wyłączników z
+  definicji nie zna), więc CLI mówiło "konsolidacja by się odpaliła" nawet gdy oba wyłączniki
+  były WYŁĄCZONE (produkcja nic by nie zrobiła). Naprawa: `ConsolidationStatus` niesie dziś DWA
+  pola osobno - `thresholdsExceeded` (stara semantyka, `shouldTriggerConsolidation`, BEZ WZGLĘDU
+  na wyłączniki) i `wouldTrigger`/`include` (`planAutoConsolidation`, respektuje oba wyłączniki).
+  Przy domyślnych ustawieniach `thresholdsExceeded:true` + `wouldTrigger:false` jest ZAMIERZONYM,
+  poprawnym wynikiem, nie sprzecznością do ścigania. Przy okazji zniknęła też stara, osobna
+  formuła progu dedupu (`resolvePlanDedupThreshold`, bez podłogi z ustawień) - `buildPlan`
+  dostaje dziś `resolveConsolidationThresholds(...).brainNotesLimit`, jedno liczydło z
+  `consolidationRunner.ts:610` (przed naprawą różniło się liczbowo, np. `state=30`/`ustawienie=50`
+  dawało companionowi `30` zamiast produkcyjnych `50`). Testy: `memoryStatus.test.ts`.
 - ⚠️ **`obsidian` nie jest zależnością tego repo.** `companion/main.ts` musi importować
   `{ Plugin, Platform }` z bare specyfiera `'obsidian'` (w RUNTIME to ma być prawdziwy pakiet,
   dostarczony przez hosta - `esbuild.harness.ts` -> `buildCompanion()` znaczy `obsidian` jako
