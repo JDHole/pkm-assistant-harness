@@ -3,7 +3,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import {spawnSync} from 'node:child_process';
+import {spawn, spawnSync} from 'node:child_process';
 import test from 'node:test';
 import {ack, decide, dispatch, GrafError, next, prepare, probe, reconcile, record, report, resume, retry, sha256} from './index.mjs';
 
@@ -131,4 +131,26 @@ test('repeated record completes packet, gate and writer release after crash boun
   const dir = path.join(f.data_root, 'runs', 'run'); truncateJournal(dir, event => event.type === 'effect_applied'); fs.writeFileSync(reservation, reservationBody); record(request);
   let events = fs.readFileSync(path.join(dir, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse); assert.ok(events.some(event => event.type === 'packet_refreshed')); assert.ok(events.some(event => event.type === 'gate')); assert.equal(fs.existsSync(reservation), false);
   truncateJournal(dir, event => event.type === 'node_result'); fs.writeFileSync(reservation, reservationBody); assert.equal(record(request).idempotent, true); events = fs.readFileSync(path.join(dir, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse); assert.ok(events.some(event => event.type === 'gate')); assert.equal(fs.existsSync(reservation), false);
+});
+
+test('vault-local stale lock artifacts cannot block local mutation locks', () => {
+  const f = fixture(); prepare(f.base); const stale = path.join(f.data_root, 'runs', 'run', '.graf.lock'); fs.mkdirSync(stale); fs.writeFileSync(path.join(stale, 'owner.json'), JSON.stringify({pid: 999999, acquired_at: new Date().toISOString()}));
+  assert.equal(next({data_root: f.data_root, run_id: 'run'}).ready[0].node_id, 'write'); assert.equal(fs.existsSync(stale), true);
+});
+
+test('local SQLite mutation lock is exclusive and a killed holder releases it', async () => {
+  const f = fixture(); prepare(f.base); const ready = path.join(f.root, 'holder-ready'), childFile = path.join(f.root, 'lock-holder.mjs'), moduleUrl = new URL('./lib.mjs', import.meta.url).href;
+  fs.writeFileSync(childFile, `import fs from 'node:fs'; import path from 'node:path'; import {next} from ${JSON.stringify(moduleUrl)}; const read=fs.readFileSync.bind(fs); let held=false; fs.readFileSync=(file,...args)=>{ if(!held && path.basename(String(file))==='manifest.json'){ held=true; fs.writeFileSync(${JSON.stringify(ready)},'ready'); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,10000); } return read(file,...args); }; next({data_root:${JSON.stringify(f.data_root)},run_id:'run'});`);
+  const child = spawn(process.execPath, [childFile], {stdio: 'ignore'});
+  try {
+    const deadline = Date.now() + 5000; while (!fs.existsSync(ready)) { if (Date.now() > deadline) throw new Error('lock holder did not start'); await new Promise(resolve => setTimeout(resolve, 10)); }
+    expectedError(() => next({data_root: f.data_root, run_id: 'run'}), 'LOCKED');
+    child.kill(); await new Promise(resolve => child.once('close', resolve));
+    assert.equal(next({data_root: f.data_root, run_id: 'run'}).ready[0].node_id, 'write');
+  } finally { if (child.exitCode === null) child.kill(); }
+});
+
+test('writer release renames the durable lease and frees its active name', () => {
+  const f = fixture(); prepare(f.base); const d = dispatch({data_root: f.data_root, run_id: 'run', node_id: 'write'}); ack({data_root: f.data_root, run_id: 'run', node_id: 'write', attempt_id: d.attempt_id, receipt_id: 'release-receipt', tool_agent_id: 'release-agent'}); record({data_root: f.data_root, run_id: 'run', node_id: 'write', attempt_id: d.attempt_id, status: 'failed', executor_identity: 'release-agent'});
+  const reservationDir = path.join(f.data_root, 'writer-reservations'), active = `${sha256(fs.realpathSync.native(f.repo))}.json`; assert.equal(fs.existsSync(path.join(reservationDir, active)), false); assert.equal(fs.readdirSync(reservationDir).filter(name => name.startsWith(`${active}.released-`)).length, 1);
 });

@@ -5,7 +5,9 @@
 import crypto from 'node:crypto';
 import {execFileSync} from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
+import {DatabaseSync} from 'node:sqlite';
 
 export const VERSION = '1.0.0';
 export const SCHEMA_VERSION = 1;
@@ -149,17 +151,26 @@ export function validateManifest(manifest) {
 }
 
 function acquireLock(dir) {
-  const lock = path.join(dir, '.graf.lock'); fs.mkdirSync(dir, {recursive: true});
-  try { fs.mkdirSync(lock); fsyncFile(path.join(lock, 'owner.json'), JSON.stringify({pid: process.pid, acquired_at: now()})); }
-  catch {
-    const owner = fs.existsSync(path.join(lock, 'owner.json')) ? readJson(path.join(lock, 'owner.json')) : null;
-    let alive = true; try { if (Number.isInteger(owner?.pid)) process.kill(owner.pid, 0); } catch (error) { alive = error.code !== 'ESRCH'; }
-    if (alive) fail('LOCKED', 'Another Graf mutation holds the run lock', {run_dir: dir, owner});
-    // This recovers only a local crashed CLI lock. Writer reservations remain
-    // separate durable leases and are deliberately never removed here.
-    fs.rmSync(lock, {recursive: true, force: true}); fs.mkdirSync(lock); fsyncFile(path.join(lock, 'owner.json'), JSON.stringify({pid: process.pid, acquired_at: now(), recovered_dead_pid: owner?.pid ?? null}));
+  fs.mkdirSync(dir, {recursive: true});
+  const target = fs.realpathSync.native(path.resolve(dir));
+  const lockRoot = path.join(os.tmpdir(), 'graf-v1-locks');
+  fs.mkdirSync(lockRoot, {recursive: true});
+  const lock = path.join(lockRoot, `${sha256(process.platform === 'win32' ? target.toLowerCase() : target)}.sqlite`);
+  const database = new DatabaseSync(lock);
+  try {
+    database.exec('PRAGMA busy_timeout = 0');
+    database.exec('BEGIN IMMEDIATE');
+  } catch (error) {
+    try { database.close(); } catch {}
+    if (error?.errcode === 5) fail('LOCKED', 'Another Graf mutation holds the local SQLite transaction', {run_dir: dir, lock});
+    throw error;
   }
-  return () => { try { fs.rmSync(lock, {recursive: true, force: true}); } catch {} };
+  return () => {
+    let releaseError = null;
+    try { database.exec('ROLLBACK'); } catch (error) { releaseError = error; }
+    try { database.close(); } catch (error) { releaseError ||= error; }
+    if (releaseError) fail('LOCK_RELEASE_FAILED', 'Local SQLite mutation transaction could not be released', {run_dir: dir, lock, cause: releaseError.message});
+  };
 }
 function withLock(dataRoot, runId, fn) { const dir = runDir(dataRoot, runId); const release = acquireLock(dir); try { return fn(dir); } finally { release(); } }
 
@@ -380,7 +391,9 @@ function reserveWriter(dataRoot, manifest, node, attemptId) {
 }
 function releaseWriter(dataRoot, manifest, node, attemptId) {
   if (!isWriter(node)) return; const file = writerReservation(dataRoot, manifest.repo); if (!fs.existsSync(file)) return;
-  const current = readJson(file); if (current.run_id === manifest.run_id && current.node_id === node.node_id && current.attempt_id === attemptId) fs.rmSync(file, {force: true});
+  const current = readJson(file); if (current.run_id === manifest.run_id && current.node_id === node.node_id && current.attempt_id === attemptId) {
+    const released = `${file}.released-${Date.now()}-${crypto.randomUUID()}`; fs.renameSync(file, released); if (fs.existsSync(file)) fail('WRITER_RELEASE_FAILED', 'Writer reservation active name remained after atomic release rename', {file, released});
+  }
 }
 function nativePrompt(manifest, node, attemptId, packet, expectedEffects = []) {
   const sourceText = packet.sources.map(s => `--- SOURCE ${s.id} ${s.path}:${s.range.start}-${s.range.end} sha256=${s.sha256}\n${s.content}\n--- END SOURCE`).join('\n');
