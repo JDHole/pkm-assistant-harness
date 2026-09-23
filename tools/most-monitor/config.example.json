@@ -1,0 +1,10 @@
+{
+  "dataDir": "C:/Users/USER/.chatgpt-local/most-monitor",
+  "snapshotPath": "C:/path/to/vault/99_System/State/subscription-usage.json",
+  "codexPath": "C:/path/to/official/codex.exe",
+  "claudePath": "C:/path/to/official/claude.exe",
+  "identitySalt": "GENERATE_LOCAL_RANDOM_32_BYTES_DO_NOT_SYNC",
+  "port": 1236,
+  "pollSeconds": 300,
+  "notifications": true
+}
