@@ -12,7 +12,6 @@
 import fsp from 'fs/promises';
 import path from 'path';
 import os from 'os';
-import PKMAssistantPlugin from '@plugin/src/main.js';
 import { createMockApp } from '../mock/app.js';
 // Atrapa `obsidian` mieszka w TYM repo od 2026-09-11 (patrz `esbuild.harness.ts`), nie w
 // drzewie pluginu — więc import jest lokalny, nie przez alias `@plugin/`.
@@ -33,6 +32,7 @@ export interface BootOptions {
   offline?: boolean;
   fixtureOverrides?: FixtureOverride[];
   tag?: string;
+  fixtureDir?: string;
 }
 
 export interface BootResult {
@@ -67,6 +67,26 @@ function swapHarnessProviders(providers: HarnessRuntime): void {
 }
 
 /**
+ * Kopiuje katalog fixture do świeżego temp-vaulta (`tempRoot`, jeszcze nieistniejący — `fsp.cp`
+ * go tworzy). Wydzielone z `bootPlugin` (prompt-eval adapter, impl_fixture 2026-09-23): `--fixture
+ * <dir>` w `run.js` ma być testowalne bez kosztu pełnego bootu pluginu (`onload()+waitForReady()`
+ * na PRAWDZIWYM `PKMAssistantPlugin`) — patrz `lib/boot.fixtureDir.test.ts`.
+ *
+ * @param tempRoot - katalog docelowy temp-vaulta.
+ * @param fixtureDir - katalog źródłowy fixture; domyślnie `FIXTURE_DIR` (`vault-fixture` tego repo).
+ * @throws Error z czytelnym komunikatem, gdy `fixtureDir` nie istnieje — zamiast surowego ENOENT
+ *   z `fsp.cp`, które nie mówi wprost, CZEGO zabrakło.
+ */
+export async function copyFixture(tempRoot: string, fixtureDir: string = FIXTURE_DIR): Promise<void> {
+  try {
+    await fsp.stat(fixtureDir);
+  } catch {
+    throw new Error(`[harness] katalog fixture nie istnieje: ${fixtureDir}`);
+  }
+  await fsp.cp(fixtureDir, tempRoot, { recursive: true });
+}
+
+/**
  * Kopiuje fixture → świeży temp-vault, nakłada opcjonalne nadpisy scenariusza, stawia plugin.
  *
  * @param {Object} [opts]
@@ -74,13 +94,15 @@ function swapHarnessProviders(providers: HarnessRuntime): void {
  * @param {Array<{path:string, content:string}>} [opts.fixtureOverrides] - pliki DOPISANE do temp-vaulta
  *   po skopiowaniu fixture, PRZED `onload()` (np. podłożona notatka brain dla scenariusza create-only).
  * @param {string} [opts.tag] - etykieta w nazwie katalogu temp (czytelność przy --keep-vault).
+ * @param {string} [opts.fixtureDir] - katalog fixture do skopiowania zamiast domyślnego `FIXTURE_DIR`
+ *   (prompt-eval adapter: żeby dało się złożyć realny prompt persony zamiast hard-coded vault-fixture).
  * @returns {Promise<{plugin, app, tempRoot, bootMs}>}
  */
-export async function bootPlugin({ offline = false, fixtureOverrides = [], tag = '' }: BootOptions = {}): Promise<BootResult> {
+export async function bootPlugin({ offline = false, fixtureOverrides = [], tag = '', fixtureDir }: BootOptions = {}): Promise<BootResult> {
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
   const suffix = tag ? `${timestamp}-${tag}` : timestamp;
   const tempRoot = path.join(os.tmpdir(), 'pkm-harness', suffix);
-  await fsp.cp(FIXTURE_DIR, tempRoot, { recursive: true });
+  await copyFixture(tempRoot, fixtureDir);
 
   // Nadpisy scenariusza — DOPISANE po fixture, przed bootem (świeży stan startowy per scenariusz).
   for (const ov of fixtureOverrides || []) {
@@ -92,6 +114,14 @@ export async function bootPlugin({ offline = false, fixtureOverrides = [], tag =
 
   const manifest: HarnessRuntime = JSON.parse(await fsp.readFile(MANIFEST_PATH, 'utf8'));
   const app = createMockApp(tempRoot);
+  // Import DYNAMICZNY, celowo NIE statyczny u góry pliku: `@plugin/src/main.js` (composition root
+  // pluginu) ciągnie za sobą PRAWDZIWY `'obsidian'`, którego poza bundlem esbuilda (alias →
+  // atrapa, patrz `esbuild.harness.ts`) po prostu nie ma. Statyczny import wywalałby import
+  // TEGO CAŁEGO modułu (`lib/boot.ts`) pod gołym `tsx`/AVA — czyli i `copyFixture`, i `FIXTURE_DIR`
+  // — mimo że one same z 'obsidian' nic wspólnego nie mają. Odroczenie do wnętrza `bootPlugin()`
+  // (wołane tylko przy PRAWDZIWYM boocie, nie w testach `copyFixture`) naprawia to bez zmiany
+  // zachowania: `bootPlugin()` nadal stawia dokładnie tego samego, prawdziwego pluginu.
+  const { default: PKMAssistantPlugin } = await import('@plugin/src/main.js');
   const plugin: HarnessRuntime = new (PKMAssistantPlugin as HarnessRuntime)(app, manifest);
 
   // C-02: config runtime'u powstaje w KONSTRUKTORZE pluginu, więc dostawców podmieniamy RAZ,

@@ -41,6 +41,7 @@ interface CliFlags {
   autonomy: string | undefined;
   approve: string | undefined;
   maxIterations: number | null;
+  fixture: string | null | undefined;
 }
 
 interface FakeLlmServer {
@@ -54,6 +55,7 @@ function parseArgs(argv: string[]): CliFlags {
   const flags: CliFlags = {
     dryBoot: false, keepVault: false, offline: false, json: false,
     agent: null, prompt: null, autonomy: 'edge', approve: 'auto', maxIterations: null,
+    fixture: null,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -68,12 +70,14 @@ function parseArgs(argv: string[]): CliFlags {
       case '--autonomy': flags.autonomy = next(); break;
       case '--approve': flags.approve = next(); break;
       case '--max-iterations': flags.maxIterations = parseInt(next(), 10) || null; break;
+      case '--fixture': flags.fixture = next(); break;
       default:
         if (a.startsWith('--agent=')) flags.agent = a.slice(8);
         else if (a.startsWith('--prompt=')) flags.prompt = a.slice(9);
         else if (a.startsWith('--autonomy=')) flags.autonomy = a.slice(11);
         else if (a.startsWith('--approve=')) flags.approve = a.slice(10);
         else if (a.startsWith('--max-iterations=')) flags.maxIterations = parseInt(a.slice(17), 10) || null;
+        else if (a.startsWith('--fixture=')) flags.fixture = a.slice(10);
         break;
     }
   }
@@ -112,7 +116,7 @@ async function cleanup(plugin: HarnessRuntime, tempRoot: string, { keepVault }: 
 
 // ── FAZA A: dry-boot ──
 async function runDryBoot(): Promise<void> {
-  const { plugin, tempRoot, bootMs } = await bootPlugin({ offline: false });
+  const { plugin, tempRoot, bootMs } = await bootPlugin({ offline: false, fixtureDir: flags.fixture ?? undefined });
 
   const envState = plugin.env?.state ?? '(brak)';
   const settingsLoaded = !!plugin.env?.settings;
@@ -193,7 +197,7 @@ async function runExploration(): Promise<void> {
     if (!flags.json) line(`[harness] fake-serwer SSE: ${fakeServer.url}`);
   }
 
-  const { plugin, tempRoot } = await bootPlugin({ offline: flags.offline });
+  const { plugin, tempRoot } = await bootPlugin({ offline: flags.offline, fixtureDir: flags.fixture ?? undefined });
 
   // ── Mostek klucza: .env.local → env.settings.pkmAssistant.chat.apiKeys.deepseek ──
   const chatKeys = plugin.env?.settings?.pkmAssistant?.chat?.apiKeys;

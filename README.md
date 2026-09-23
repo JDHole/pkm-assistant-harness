@@ -130,6 +130,9 @@ node dist/run.js --agent Tester --prompt "przeczytaj Notatki/powitanie.md i stre
 Flagi: `--agent <nazwa>` `--prompt "<...>"` `--autonomy yolo|edge|all` (default edge)
 `--approve auto|deny` `--max-iterations N` `--offline` (fake-serwer zamiast żywego API)
 `--keep-vault` (nie kasuj temp-vaulta — do inspekcji) `--json` (wynik maszynowy)
+`--fixture <dir>` (własny katalog fixture zamiast domyślnego `vault-fixture` — kopiowany 1:1 do
+temp-vaulta przez `bootPlugin`, np. żeby złożyć realny prompt persony zamiast hard-coded rekwizytu;
+brak flagi = zachowanie bez zmian, patrz `lib/boot.fixtureDir.test.ts`)
 `--dry-boot`. Scenariusze: `--only NN`, `--live`.
 
 **Kody wyjścia (bramka, nie ozdoba):** `0` = całe DoD biegu na PASS, `1` = choć jedna pozycja DoD
