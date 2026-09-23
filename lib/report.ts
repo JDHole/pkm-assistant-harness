@@ -343,6 +343,11 @@ export function buildJsonReport(ctx: ReportContext): Runtime {
     model: turn.model?.modelKey || null,
     autonomy: turn.autonomy,
     toolDefsVisible: turn.toolCount,
+    // prompt-eval adapter (impl_report, 2026-09-23): pełny prompt systemowy tury, dosłownie -
+    // konsument JSON-a składa z niego realną personę do oceny. `null` tylko, gdy tura go w ogóle
+    // nie niesie (pole nieobecne) - pusty string to inna, uczciwa wartość ("tura BEZ promptu",
+    // nie "nie wiadomo").
+    systemPrompt: typeof turn.systemPrompt === 'string' ? turn.systemPrompt : null,
     result: {
       finalText: r.finalText || '',
       toolsUsed: r.toolsUsed || [],

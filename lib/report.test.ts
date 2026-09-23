@@ -41,6 +41,7 @@ interface CtxOptions {
     finalText?: string;
     toolsUsed?: string[];
     toolCallDetails?: ToolCallDetailLike[];
+    systemPrompt?: string;
 }
 
 /**
@@ -51,7 +52,7 @@ interface CtxOptions {
 const DEFAULT_FINAL_TEXT = 'Przeczytałem notatkę i przygotowałem krótkie podsumowanie treści.';
 
 /** Kontekst raportu bez bootowania pluginu - dokładnie to, co dostaje `buildTextReport`/`buildJsonReport`. */
-function makeCtx({ events = [], summary = {}, finalText = DEFAULT_FINAL_TEXT, toolsUsed = [], toolCallDetails = [] }: CtxOptions = {}): ReportContext {
+function makeCtx({ events = [], summary = {}, finalText = DEFAULT_FINAL_TEXT, toolsUsed = [], toolCallDetails = [], systemPrompt = '' }: CtxOptions = {}): ReportContext {
     return {
         turn: {
             result: {
@@ -64,7 +65,7 @@ function makeCtx({ events = [], summary = {}, finalText = DEFAULT_FINAL_TEXT, to
             },
             agent: { name: 'Tester' },
             model: { modelKey: 'deepseek-chat' },
-            systemPrompt: '',
+            systemPrompt,
             autonomy: 'edge',
             chunkCount: 3,
             approvals: [],
@@ -281,4 +282,46 @@ test('W6-01: pusty finalText + niepuste toolsUsed (bez toolCallDetails) ⇒ FAIL
     }));
     t.false(dod[FINAL_TEXT_DOD_KEY].pass);
     t.is(report.dodToExitCode(dod), 1);
+});
+
+// ─── prompt-eval adapter (impl_report, 2026-09-23): `--json` musi nieść PEŁNY prompt systemowy
+// tury (`turn.systemPrompt`) pod kluczem `systemPrompt` - bez tego adapter nie może złożyć
+// realnej persony do oceny. Dosłowna wartość, nie sama obecność pola.
+
+test('buildJsonReport: systemPrompt niesie dosłowną treść promptu systemowego tury', t => {
+    const prompt = 'Jesteś agentem Tester. Masz dostęp do narzędzi read/write. Pamięć: brak.';
+    const json = report.buildJsonReport(makeCtx({ systemPrompt: prompt }));
+    t.is(json.systemPrompt, prompt);
+});
+
+test('buildJsonReport: systemPrompt jest null, gdy tura go nie niesie (pole nieobecne, nie pusty string)', t => {
+    const ctx = {
+        turn: {
+            result: {
+                finalText: DEFAULT_FINAL_TEXT,
+                toolsUsed: [],
+                toolCallDetails: [],
+                usage: {},
+                iterations: 1,
+                stoppedBy: 'natural',
+            },
+            agent: { name: 'Tester' },
+            model: { modelKey: 'deepseek-chat' },
+            // brak pola systemPrompt - dokładnie ten przypadek, o którym mówi kontrakt: "null
+            // tylko, gdy tura go nie niesie" (pusty string '' to co innego niż brak pola).
+            autonomy: 'edge',
+            chunkCount: 3,
+            approvals: [],
+            traceLabel: 'harness/turn',
+            toolCount: 7,
+        },
+        traceSummary: { ...EMPTY_SUMMARY, ...traceOkSummary },
+        traceEvents: traceOkEvents(),
+        tempVault: 'C:/temp/pkm-harness/x',
+        tracePath: 'C:/temp/pkm-harness/x/.pkm-assistant/logs/trace.log',
+        keepVault: false,
+        offline: true,
+    } as unknown as ReportContext;
+    const json = report.buildJsonReport(ctx);
+    t.is(json.systemPrompt, null);
 });
