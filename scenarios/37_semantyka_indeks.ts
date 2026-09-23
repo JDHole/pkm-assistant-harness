@@ -27,10 +27,20 @@
  */
 import { textTurn, toolCallTurn } from '../mock/fake-llm-server.js';
 import { VaultIndexer, countDocs, searchVectorTopK, createEmbedderFacade } from '@plugin/modules/embedding/index.js';
+// Deep-import świadomy (trzeci taki w tym repo, po 33_skill_marker i 35_artefakt_approval —
+// patrz README, sekcja "Jak kod pluginu wchodzi do harnessu"): kroki C/D budują PRAWDZIWY dump
+// Oramy v1, a `createEmbeddingDb`/`insertVectorLean`/`serialize` NIE wychodzą z barrela
+// `modules/embedding/index.js` (nie są publicznym API modułu - `VaultIndexer` jest jedynym
+// produkcyjnym wołaczem). Alternatywa ze SPEC_H37 ("create/insert/save z @orama/orama wprost")
+// nie działa STĄD: `@orama/orama` siedzi wyłącznie w node_modules REPO PLUGINU (rozwiązywanego
+// przez alias `@plugin/`), a pliki TEGO repo (harnessu) rozwiązują bare importy z WŁASNEGO
+// node_modules, gdzie tej paczki nie ma [measured: `ls node_modules/@orama` w tym repo - brak].
+import { createEmbeddingDb, insertVectorLean, serialize } from '@plugin/modules/embedding/orama_engine.js';
 import { EmbeddingHelper } from '@plugin/modules/memory/index.js';
 import { assert, assertFinalText, assertToolOk } from './_asserts.js';
 
 import type { FixturePayload, Scenario } from './_asserts.js';
+import type { EmbedderFacade, IndexerNotice } from '@plugin/modules/embedding/index.js';
 
 const NOTATKA_IGLA = 'Notatki/zeglarstwo.md';
 const NOTATKA_ODWRACAJACA = 'Notatki/kuchnia.md';
@@ -55,6 +65,11 @@ const ODPOWIEDZ = 'Semantyka odnalazla notatke o zeglarstwie.';
  * `Notatki/referencje.md`). To nie był błąd produkcji, tylko za słaba atrapa embeddera.
  */
 const DIM = 256;
+
+/** Klucz modelu atrapy embeddera — wspólny dla WSZYSTKICH indekserów w tym scenariuszu (główny
+ *  z `setup()` + drugorzędne z kroków B-E), bo `VaultIndexer._restoreFromV2`/`_migrateV1` robi
+ *  pełny rebuild zamiast restore/migracji, gdy `meta.model_key` różni się od żywego adaptera. */
+const FAKE_MODEL_KEY = 'harness:fake-hash-embed';
 
 /** Uchwyt na indekser scenariusza (asercje czytają, co realnie weszło do indeksu). */
 const stan: { indexer: FixturePayload } = { indexer: null };
@@ -167,7 +182,7 @@ export default ({
     Object.defineProperty(rejestr, 'default', {
       configurable: true,
       get: () => ({
-        modelKey: 'harness:fake-hash-embed',
+        modelKey: FAKE_MODEL_KEY,
         dims: DIM,
         async embed(texts: string[]) {
           return texts.map((t) => ({ vector: wektor(t) }));
@@ -320,5 +335,296 @@ export default ({
       finalText.includes(ODPOWIEDZ),
       `Finalny tekst pętli jest inny niż zaskryptowany: ${JSON.stringify(finalText.slice(0, 200))}`,
     );
+
+    // ══════════════════════════════════════════════════════════════════════════════════
+    // A-E (SPEC_H37) — format indeksu v2 na dysku: persist / restore bez embeddingu /
+    // migracja v1→v2 (sukces i pad) / segment uszkodzony. Sekcje 1-5 wyżej sprawdzają tylko
+    // żywe API (`search`, `plugin.oramaDb`) na indekserze z `setup()` — NIC z tego nie dotyka
+    // fizycznego formatu `.pkm-assistant/index/**`, więc te kroki są czerwone na kodzie SPRZED
+    // formatu v2 (patrz komentarz przy każdym kroku, co konkretnie nie istniałoby w v1).
+    // ══════════════════════════════════════════════════════════════════════════════════
+
+    // A. Persist v2 po skanie. `_fullScan()` (VaultIndexer.ts) woła `await this._persistNow()`
+    // WPROST na końcu, nie przez `_schedulePersist()` — więc do czasu, gdy `setup()` domknęło
+    // `await indexer.initialize()`, meta + segment JUŻ leżą na dysku (bez potrzeby zerowania
+    // `persistDebounceMs`, które steruje TYLKO zapisem po zmianach na żywym indeksie).
+    // Na kodzie v1 `vault-index.meta.json` nie miałaby pola `segments` (dopiero v2 dzieli
+    // wektory na segmenty binarne) — ten fragment byłby czerwony na samym pierwszym `assert`.
+    const DEFAULT_INDEX_DIR = '.pkm-assistant/index';
+    const metaPathA = `${DEFAULT_INDEX_DIR}/vault-index.meta.json`;
+    assert(
+      await plugin.app.vault.adapter.exists(metaPathA),
+      `Brak ${metaPathA} po initialize() — VaultIndexer nie spersystował indeksu v2 od razu po skanie.`,
+    );
+    const metaA = JSON.parse(await plugin.app.vault.adapter.read(metaPathA)) as FixturePayload;
+    assert(metaA.version === 2, `meta.version powinno być 2, jest ${metaA.version}.`);
+    assert(
+      Array.isArray(metaA.segments) && metaA.segments.length === 1,
+      `Po pierwszym skanie oczekiwano dokładnie 1 segmentu, jest ${metaA.segments?.length}.`,
+    );
+    const segPathA = `${DEFAULT_INDEX_DIR}/${metaA.segments[0].file}`;
+    const segBufA: ArrayBuffer = await plugin.app.vault.adapter.readBinary(segPathA);
+    const oczekiwaneBajtyA = 16 + metaA.segments[0].rows * metaA.dims * 4;
+    assert(
+      segBufA.byteLength === oczekiwaneBajtyA,
+      `Segment ${metaA.segments[0].file} ma ${segBufA.byteLength} B, oczekiwano ${oczekiwaneBajtyA} `
+      + `(16 + ${metaA.segments[0].rows}×${metaA.dims}×4).`,
+    );
+    assert(
+      Object.keys(metaA.rows).length === liczbaDokumentow,
+      `meta.rows ma ${Object.keys(metaA.rows).length} wpisów, a countDocs(plugin.oramaDb)=${liczbaDokumentow}.`,
+    );
+
+    // B. Restore v2 BEZ embeddingu: drugi VaultIndexer na TYM SAMYM vaultcie (te same pliki,
+    // które właśnie zapisał krok A) ma odtworzyć indeks WYŁĄCZNIE z segmentów binarnych —
+    // zero wywołań embeddera. Na kodzie v1 nie było segmentów do odtworzenia bez embeddingu:
+    // `_tryRestore` w wersji v1 nie istniał w tej postaci, każdy restart re-embedowałby wszystko
+    // (`wywolaniaEmbedderaB === 0` byłoby fałszywe).
+    let wywolaniaEmbedderaB = 0;
+    const embedderB: EmbedderFacade = {
+      isReady: () => true,
+      getModelKey: () => FAKE_MODEL_KEY,
+      getDims: () => DIM,
+      async embedBatch(texts: string[]) {
+        wywolaniaEmbedderaB += texts.length;
+        return texts.map((t) => wektor(t));
+      },
+    };
+    const indexerB = new VaultIndexer({
+      plugin: {},
+      vault: plugin.app.vault,
+      embedder: embedderB,
+      isMobile: false,
+      noGoFolders: () => plugin.env?.settings?.pkmAssistant?.no_go_folders || [],
+    });
+    await indexerB.initialize();
+    assert(
+      indexerB.getStatus().status === 'ready',
+      `Restore drugiego VaultIndexera nie doszedł do 'ready': ${JSON.stringify(indexerB.getStatus())}.`,
+    );
+    assert(
+      wywolaniaEmbedderaB === 0,
+      `Restore v2 wywołał embedder ${wywolaniaEmbedderaB} razy zamiast zera — indeks NIE został odtworzony z dysku.`,
+    );
+    assert(
+      countDocs(indexerB.db) === liczbaDokumentow,
+      `Po restore countDocs=${countDocs(indexerB.db)}, a przed restartem było ${liczbaDokumentow}.`,
+    );
+    const rankingB = await searchVectorTopK(indexerB.db!, wektor(ZAPYTANIE_SEMANTYCZNE), { k: 5 });
+    const topB = (rankingB?.hits || [])[0]?.document?.path;
+    assert(topB === NOTATKA_IGLA, `Po restore top-1 semantyczny to „${topB}", a powinna być igła.`);
+    indexerB.dispose();
+
+    // ── Materiał wspólny dla C/D/E: PRAWDZIWY dump v1 (Orama) tych samych notatek, które w TEJ
+    // CHWILI widzi VaultIndexer (igła + odwracająca + 3 z fixture'u domyślnego = 5, Sekrety/
+    // wykluczone jak w produkcji), z PRAWDZIWYMI mtime'ami (`Vault#getMarkdownFiles`) — pancerz
+    // migracji wymaga, żeby te mtime zgadzały się z tym, co `_resync()` odczyta PO migracji,
+    // inaczej resync re-embedowałby notatki, które migracja miała już przenieść.
+    const notatkiWTejChwili = (plugin.app.vault.getMarkdownFiles() as FixturePayload[])
+      .filter((f: FixturePayload) => !String(f.path).startsWith('Sekrety/'));
+    assert(
+      notatkiWTejChwili.length === liczbaDokumentow,
+      `Do migracji spodziewano się ${liczbaDokumentow} notatek indeksowalnych, jest ${notatkiWTejChwili.length}.`,
+    );
+    const notatkiZTrescia = await Promise.all(notatkiWTejChwili.map(async (f: FixturePayload) => ({
+      path: String(f.path),
+      mtime: Number(f.stat.mtime),
+      content: await plugin.app.vault.adapter.read(f.path) as string,
+    })));
+    const titleOf = (p: string): string => (p.split('/').pop() || p).replace(/\.md$/i, '');
+    const schemaV1 = { id: 'string', path: 'string', title: 'string', mtime: 'number', embedding: `vector[${DIM}]` };
+    const dbV1 = await createEmbeddingDb(schemaV1 as FixturePayload);
+    for (const n of notatkiZTrescia) {
+      await insertVectorLean(dbV1, {
+        id: n.path, path: n.path, title: titleOf(n.path), mtime: n.mtime, embedding: wektor(n.content),
+      });
+    }
+    const v1Text = JSON.stringify(await serialize(dbV1));
+    const metaV1Text = JSON.stringify({
+      version: 1,
+      model_key: FAKE_MODEL_KEY,
+      dims: DIM,
+      mtimes: Object.fromEntries(notatkiZTrescia.map((n) => [n.path, n.mtime])),
+    });
+
+    // C. Migracja v1→v2 z pancerzem — ścieżka SUKCESU. Na kodzie v1 `vault-index.json` byłby
+    // czytany bezpośrednio przez Oramę (`load()`), nie migrowany — `indexerC.db` istniałby, ale
+    // `${INDEX_DIR_C}/vault-index.meta.json` nigdy nie dostałoby `version:2` ani `segments`,
+    // więc `metaC.version === 2` byłoby czerwone na starym kodzie.
+    const INDEX_DIR_C = '.pkm-assistant/index-migracja-ok';
+    await plugin.app.vault.adapter.write(`${INDEX_DIR_C}/vault-index.json`, v1Text);
+    await plugin.app.vault.adapter.write(`${INDEX_DIR_C}/vault-index.meta.json`, metaV1Text);
+    const noticesC: IndexerNotice[] = [];
+    const embedowaneTekstyC: string[] = [];
+    const embedderC: EmbedderFacade = {
+      isReady: () => true,
+      getModelKey: () => FAKE_MODEL_KEY,
+      getDims: () => DIM,
+      async embedBatch(texts: string[]) {
+        embedowaneTekstyC.push(...texts);
+        return texts.map((t) => wektor(t));
+      },
+    };
+    const indexerC = new VaultIndexer({
+      plugin: {},
+      vault: plugin.app.vault,
+      embedder: embedderC,
+      isMobile: false,
+      indexDir: INDEX_DIR_C,
+      noGoFolders: () => plugin.env?.settings?.pkmAssistant?.no_go_folders || [],
+      notify: (n) => noticesC.push(n),
+    });
+    await indexerC.initialize();
+    assert(
+      !(await plugin.app.vault.adapter.exists(`${INDEX_DIR_C}/vault-index.json`)),
+      'Po udanej migracji stary vault-index.json nadal istnieje.',
+    );
+    const metaC = JSON.parse(await plugin.app.vault.adapter.read(`${INDEX_DIR_C}/vault-index.meta.json`)) as FixturePayload;
+    assert(metaC.version === 2, `Po migracji meta.version powinno być 2, jest ${metaC.version}.`);
+    assert(metaC.segments.length === 1, `Po migracji oczekiwano 1 segmentu, jest ${metaC.segments.length}.`);
+    assert(
+      embedowaneTekstyC.length === 0,
+      `Migracja miała ominąć embedding zmigrowanych notatek, a embedder dostał ${embedowaneTekstyC.length} tekstów.`,
+    );
+    assert(
+      noticesC.some((n) => n.kind === 'migrated'),
+      `Brak powiadomienia 'migrated' po udanej migracji. Notices: ${JSON.stringify(noticesC)}.`,
+    );
+    const rankingC = await searchVectorTopK(indexerC.db!, wektor(ZAPYTANIE_SEMANTYCZNE), { k: 5 });
+    const topC = (rankingC?.hits || [])[0]?.document?.path;
+    assert(topC === NOTATKA_IGLA, `Po migracji top-1 semantyczny to „${topC}", a powinna być igła.`);
+    indexerC.dispose();
+
+    // D. Migracja PADA (writeBinary rzuca RAZ, przy zapisie segmentu bazowego) → stary plik
+    // zostaje, dopóki nowy v2 nie jest zapisany z sukcesem; indeks idzie od zera (embedder
+    // wywołany); po udanym persist v2 tego rebuildu stary plik znika. `throwOnceAdapter` rzuca
+    // WYŁĄCZNIE przy pierwszym `writeBinary` — to jest DOKŁADNIE zapis segmentu migracji
+    // (`_migrateV1`, jedyny `writeBinary` przed tym momentem); drugi `writeBinary` (segment
+    // świeżego pełnego skanu, w `_persistNow` po `_fullScan`) przechodzi. Na kodzie v1 nie było
+    // odróżnienia "migracja padła" od "zwykły błąd zapisu" — `notify('migration_failed')`
+    // nie istniał, więc `noticesD.some(...)` byłoby zawsze fałszywe.
+    const INDEX_DIR_D = '.pkm-assistant/index-migracja-fail';
+    await plugin.app.vault.adapter.write(`${INDEX_DIR_D}/vault-index.json`, v1Text);
+    await plugin.app.vault.adapter.write(`${INDEX_DIR_D}/vault-index.meta.json`, metaV1Text);
+    const v1PathD = `${INDEX_DIR_D}/vault-index.json`;
+    const realAdapterD = plugin.app.vault.adapter;
+    let wolaniaWriteBinaryD = 0;
+    let plikV1IstnialPrzyPierwszymPadzie: boolean | null = null;
+    const throwOnceAdapter = {
+      ...realAdapterD,
+      async writeBinary(path: string, data: FixturePayload) {
+        wolaniaWriteBinaryD += 1;
+        if (wolaniaWriteBinaryD === 1) {
+          plikV1IstnialPrzyPierwszymPadzie = await realAdapterD.exists(v1PathD);
+          throw new Error('harness: symulowana awaria zapisu segmentu (throw-once, krok D)');
+        }
+        return realAdapterD.writeBinary(path, data);
+      },
+    };
+    const noticesD: IndexerNotice[] = [];
+    const embedowaneTekstyD: string[] = [];
+    const embedderD: EmbedderFacade = {
+      isReady: () => true,
+      getModelKey: () => FAKE_MODEL_KEY,
+      getDims: () => DIM,
+      async embedBatch(texts: string[]) {
+        embedowaneTekstyD.push(...texts);
+        return texts.map((t) => wektor(t));
+      },
+    };
+    const indexerD = new VaultIndexer({
+      plugin: {},
+      vault: { ...plugin.app.vault, adapter: throwOnceAdapter },
+      embedder: embedderD,
+      isMobile: false,
+      indexDir: INDEX_DIR_D,
+      noGoFolders: () => plugin.env?.settings?.pkmAssistant?.no_go_folders || [],
+      notify: (n) => noticesD.push(n),
+    });
+    await indexerD.initialize();
+    assert(
+      plikV1IstnialPrzyPierwszymPadzie === true,
+      'Stary plik v1 zniknął PRZED nieudanym zapisem segmentu — pancerz migracji złamany.',
+    );
+    assert(
+      noticesD.some((n) => n.kind === 'migration_failed'),
+      `Brak powiadomienia 'migration_failed'. Notices: ${JSON.stringify(noticesD)}.`,
+    );
+    assert(
+      embedowaneTekstyD.length > 0,
+      'Po nieudanej migracji indeks powinien zbudować się OD ZERA (embedder nie został wywołany).',
+    );
+    assert(
+      indexerD.getStatus().status === 'ready',
+      `Po nieudanej migracji + rebuild indekser nie doszedł do 'ready': ${JSON.stringify(indexerD.getStatus())}.`,
+    );
+    assert(
+      !(await plugin.app.vault.adapter.exists(v1PathD)),
+      'Po udanym persist v2 (po nieudanej migracji) stary plik v1 nadal istnieje.',
+    );
+    const metaD = JSON.parse(await plugin.app.vault.adapter.read(`${INDEX_DIR_D}/vault-index.meta.json`)) as FixturePayload;
+    assert(metaD.version === 2, `Po rebuildzie meta.version powinno być 2, jest ${metaD.version}.`);
+    indexerD.dispose();
+
+    // E. Segment uszkodzony (ucięty o 4 bajty) → notify index_corrupt, pełny rebuild, meta v2
+    // spójna. Na kodzie v1 nie było segmentów binarnych do ucinania — ten krok w ogóle nie
+    // miałby czego uszkodzić w opisany sposób (kod budowałby ścieżkę do pliku, który nigdy
+    // by nie powstał, i padłby dużo wcześniej, przy odczycie `metaE1.segments[0].file`).
+    const INDEX_DIR_E = '.pkm-assistant/index-uszkodzony';
+    const embedderE: EmbedderFacade = {
+      isReady: () => true,
+      getModelKey: () => FAKE_MODEL_KEY,
+      getDims: () => DIM,
+      async embedBatch(texts: string[]) { return texts.map((t) => wektor(t)); },
+    };
+    const indexerE1 = new VaultIndexer({
+      plugin: {},
+      vault: plugin.app.vault,
+      embedder: embedderE,
+      isMobile: false,
+      indexDir: INDEX_DIR_E,
+      noGoFolders: () => plugin.env?.settings?.pkmAssistant?.no_go_folders || [],
+    });
+    await indexerE1.initialize();
+    assert(
+      indexerE1.getStatus().status === 'ready',
+      `Indekser E1 (przed uszkodzeniem) nie doszedł do 'ready': ${JSON.stringify(indexerE1.getStatus())}.`,
+    );
+    indexerE1.dispose();
+
+    const metaE1 = JSON.parse(await plugin.app.vault.adapter.read(`${INDEX_DIR_E}/vault-index.meta.json`)) as FixturePayload;
+    const segPathE = `${INDEX_DIR_E}/${metaE1.segments[0].file}`;
+    const segBufE: ArrayBuffer = await plugin.app.vault.adapter.readBinary(segPathE);
+    await plugin.app.vault.adapter.writeBinary(segPathE, segBufE.slice(0, segBufE.byteLength - 4));
+
+    const noticesE: IndexerNotice[] = [];
+    const indexerE2 = new VaultIndexer({
+      plugin: {},
+      vault: plugin.app.vault,
+      embedder: embedderE,
+      isMobile: false,
+      indexDir: INDEX_DIR_E,
+      noGoFolders: () => plugin.env?.settings?.pkmAssistant?.no_go_folders || [],
+      notify: (n) => noticesE.push(n),
+    });
+    await indexerE2.initialize();
+    assert(
+      noticesE.some((n) => n.kind === 'index_corrupt'),
+      `Brak powiadomienia 'index_corrupt' po ucięciu segmentu. Notices: ${JSON.stringify(noticesE)}.`,
+    );
+    assert(
+      indexerE2.getStatus().status === 'ready',
+      `Po uszkodzonym segmencie + rebuild indekser nie doszedł do 'ready': ${JSON.stringify(indexerE2.getStatus())}.`,
+    );
+    const metaE2 = JSON.parse(await plugin.app.vault.adapter.read(`${INDEX_DIR_E}/vault-index.meta.json`)) as FixturePayload;
+    assert(
+      metaE2.version === 2 && metaE2.segments.length === 1,
+      `Meta po rebuildzie nie wygląda poprawnie: ${JSON.stringify(metaE2)}.`,
+    );
+    assert(
+      countDocs(indexerE2.db) === liczbaDokumentow,
+      `Po rebuildzie z uszkodzonego segmentu countDocs=${countDocs(indexerE2.db)}, oczekiwano ${liczbaDokumentow}.`,
+    );
+    indexerE2.dispose();
   },
 } satisfies Scenario);
