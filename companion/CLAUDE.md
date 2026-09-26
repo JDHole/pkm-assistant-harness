@@ -164,10 +164,35 @@ Wywołanie: `pkm-assistant-dev:agent-turn agent=<imię> prompt=<tekst> [tools=re
 brak, pusty string po `trim()` albo literał `'true'` -> `bad_flag` (ten sam wzorzec co
 `agent`/`section` gdzie indziej). `tools`: `readonly` (domyślna) albo `none`, bez względu na
 wielkość liter. `max-iterations`: liczba całkowita 1-20 (domyślnie 8). `timeout`: liczba całkowita
-sekund 10-600 (domyślnie 180) - budżet CAŁEJ tury; po przekroczeniu `shouldAbort()` zaczyna
-zwracać `true` i `model.stopStream()` jest wołane z timera, `stoppedBy` wychodzi `'timeout'`
-(mapowane z `'abort'` pętli - `agent-turn` nie ma żadnego INNEGO źródła abortu, więc `'abort'`
-surowej pętli zawsze znaczy "nasz timer strzelił"; timer czyszczony w `finally`).
+sekund 10-600 (domyślnie 180) - budżet CAŁEJ tury.
+
+**Limity 1:1 z czatem (K-adwersarialna, poprawka 2026-09-26):** `maxToolResultLength`/
+`maxToolResultLengthPerTool`/`perCallTimeoutMs`/`stallTimeoutMs` liczy `computeAgentTurnLimits`
+(`agentTurn.ts`) z `getLimits(hostRaw.env?.settings)` - DOKŁADNIE to, co `chat_streaming.ts:676-694`
+podaje do `runAgentLoop`; WYŁĄCZNIE `maxIterations` przychodzi z flagi CLI (czat liczy go RAZ na
+turę z `getLimits()`, `agent-turn` nie ma pojęcia "kontynuacji"). `stallTimeoutMs` jest
+WYJĄTKIEM: czat NIE podaje go do `runAgentLoop` w ogóle (ma osobny, zewnętrzny `StreamWatchdog`
+napędzany UI/chunkami), ale WARUNEK platformy (`chat_streaming.ts:639-642`: `xai` nie streamuje,
+cisza mid-flight tam normalna, watchdog wyłączony) jest tym samym warunkiem, jakiego potrzebuje
+WBUDOWANY watchdog ciszy `runAgentLoop` (`limits.stallTimeoutMs`) - `agent-turn`, bez własnej
+warstwy UI, używa go wprost jako jedynego dostępnego mu odpowiednika. `hostRaw.env`/`.settings`
+zwalidowane NA GRANICY (`isRecord`) - zły kształt/brak -> `getLimits(null)`, same defaulty.
+
+**Termin CAŁEGO biegu jest WYŚCIGIEM, nie flagą (K-adwersarialna, poprawka 2026-09-26):**
+`Promise.race` między `runAgentLoop(...)` a budzikiem (`deps.setTimer`). Wywołanie narzędzia,
+które WISI (np. zawieszony HTTP embeddingu w `search` scope=memory) blokowałoby
+`await runAgentLoop(...)` W NIESKOŃCZONOŚĆ, mimo że `model.stopStream()` już poszedł -
+`stopStream` ubija WYŁĄCZNIE stream modelu, nie egzekucję narzędzia w toku. Budzik wygrywa
+wyścig -> `model.stopStream()` (na wszelki wypadek), zwrot NATYCHMIAST ze `stoppedBy:'timeout'`,
+`finalText:''`, `toolCalls` z LOKALNEJ księgowości (`onIterationStart`/`onToolResults` - patrz
+niżej), blokada "jeden bieg naraz" ZWOLNIONA (`finally` w `commands.ts`, tuż po powrocie tej
+funkcji). Bieg NIE jest anulowany - kontynuuje W TLE z `shouldAbort()===true` (kończy się sam,
+gdy/jeśli jego zawieszone wywołanie narzędzia w końcu wróci; `tools=readonly` gwarantuje, że
+osierocony ogon nigdy niczego nie zapisze) - jego późniejsze rozstrzygnięcie (sukces ALBO
+wyjątek) jest POŁKNIĘTE (`.then(ok, ok)` w `agentTurn.ts` - obie gałęzie obsłużone, zero
+`unhandled rejection`). Gdy pętla wygrywa wyścig normalnie, `stoppedBy:'abort'` z samej pętli
+(gdyby się kiedyś pojawiło) mapuje się na `'timeout'` tylko, gdy budzik REALNIE strzelił w tym
+samym takcie - obrona w głąb, nie główna ścieżka.
 
 **Bezpieczeństwo bez zgód:** `autonomy:'yolo'` (patrz `core/security/PermissionSystem.ts`,
 `requiresApproval` zwraca `false` zawsze w tym trybie) - `approvalManager`/`diffModalFactory`
@@ -180,8 +205,24 @@ ZEWNĘTRZNYCH (`tool.serverName` obecne = MCP usera, nigdy nie wpuszczane). Egze
 `runAgentLoop` sprawdza nazwę narzędzia względem tej listy PRZED `mcpClient.executeToolCall` -
 narzędzie spoza listy (model halucynuje np. `write` mimo `tools=readonly`) dostaje rzucony
 wyjątek (`Tool "<name>" is not allowed in agent-turn (tools=<mode>)`), `mcpClient` NIE jest w
-ogóle wołany; `AgentLoop.ts` łapie ten wyjątek per-narzędziowo i sam wpisuje go do
-`toolCallDetails` z `error:true` - stąd wpis w `toolCalls` z `ok:false` bez dodatkowej księgowości.
+ogóle wołany. Bariera trzyma NAWET gdy `toolRegistry.filterByAgent(agent)` sam z siebie zezwala
+na to narzędzie (agent z pełnym dostępem w ustawieniach hosta) - `READONLY_TOOLS` jest GÓRNYM
+sufitem TEJ komendy, nie tylko odbiciem uprawnień agenta.
+
+**`toolCalls[].ok`/`.error` - źródło prawdy to WŁASNA księgowość, nie `AgentLoop`'owe `error:true`
+(K-adwersarialna, poprawka 2026-09-26 - dawniej `ok: !detail.error` KŁAMAŁO).**
+`MCPClient.executeToolCall` W PRAKTYCE NIGDY nie rzuca - łapie WŁASNE wyjątki i oddaje
+`{isError:true, error}` (`MCPClient.ts` ok. l.1195-1204), więc `AgentLoop.ts` (który o `isError`
+nic nie wie - ustawia `error:true` w `toolCallDetails` WYŁĄCZNIE po złapanym rzucie) widziałby
+odmowę No-Go/permission jako sukces. `agent-turn` podaje więc `runAgentLoop` własny hak
+`onToolResults` (lokalny, BEZ zapisu - dozwolone punktem 7 specyfikacji zadania), który per
+wywołanie: rzut (whitelista wyżej) -> `ok:false`; `result` to JSON z `isError:true` -> `ok:false`,
+`error` z pola `error`/`message`; inaczej -> `ok:true`. Ten sam hak (razem z `onIterationStart`,
+licznikiem iteracji) jest JEDYNYM źródłem `toolCalls` w gałęzi timeoutu (wyżej) - w gałęzi
+normalnego zakończenia jego werdykty są zipowane POZYCYJNIE z `loopResult.toolCallDetails`
+(oba iterują TEN SAM `results` z `Promise.all`, w tej samej kolejności, per iteracja) - `ok`/
+`error` z księgowości, `resultPreview`/`name`/`args` z detali pętli (bez duplikowania jej
+obcinania/formatowania).
 
 **Agent JAWNY, zero efektów ubocznych w UI usera:** `agent` jest rozwiązywany jak w `agent-prompt`
 (dokładne dopasowanie -> bez wielkości liter jeśli JEDNOZNACZNE -> `agent_not_found`/
@@ -194,20 +235,47 @@ agenta - dzieliłyby jeden adapter w trakcie `stream()`). Model `null`/bez `.str
 `model_unavailable`.
 
 **Pamięć: zero zapisu do sesji/persony.** Store to `ArrayMessageStore([system, user])` - `agent-turn`
-NIE podaje `hooks.onUsage`/`onToolResults`/`beforeContinue` do `runAgentLoop` (te haki w czacie
-piszą do sesji/TokenTrackera na dysku) i nie woła `appendToActiveSession`. `session:'none'` w
-`AgentTurnData` jest stałą, nie pomiarem - to jest KONTRAKT, nie obserwacja.
+NIE podaje `hooks.onUsage`/`beforeContinue`/`onToolCallsParsed` do `runAgentLoop` (te haki w
+czacie piszą do sesji/TokenTrackera na dysku) i nie woła `appendToActiveSession`. `hooks.onIterationStart`/
+`onToolResults` SĄ podane, ale WYŁĄCZNIE do lokalnej księgowości w pamięci procesu (licznik
+iteracji, `ok`/`error` per narzędzie - patrz akapit wyżej) - zero zapisu na dysk, zero
+persystencji między wywołaniami CLI. `session:'none'` w `AgentTurnData` jest stałą, nie pomiarem
+- to jest KONTRAKT, nie obserwacja.
 
-**Jeden bieg naraz:** drugi równoległy `agent-turn` (w obrębie JEDNEJ instancji companiona) ->
-błąd `busy`; pierwszy bieg nienaruszony. Blokada (`createRunLock()` w `commands.ts`) żyje w
-ZAMKNIĘCIU `buildCliCommands` (jak `createInstanceTracker`), NIE globalnie w module - zwalniana w
-`finally`, także po wyjątku i timeoucie.
+**Jeden bieg naraz - blokada jest PER INSTANCJA companiona, nie globalna.** Drugi równoległy
+`agent-turn` (na TEJ SAMEJ instancji) -> błąd `busy`; pierwszy bieg nienaruszony. Blokada
+(`createRunLock()` w `commands.ts`) żyje w ZAMKNIĘCIU `buildCliCommands` (jak
+`createInstanceTracker`), NIE globalnie w module - zwalniana w `finally`, także po wyjątku i po
+wygranej budzika w wyścigu wyżej (bieg osierocony w tle NIE trzyma jej dłużej). **Przeładowanie
+wtyczki-nosiciela w trakcie biegu** (`plugin:reload id=pkm-assistant-dev`, albo Obsidian
+przeładowujący WSZYSTKIE wtyczki) tworzy NOWĄ instancję `PkmAssistantDevPlugin` -> nowy
+`onload()` -> nowe wywołanie `buildCliCommands` -> NOWA, PUSTA blokada w NOWYM zamknięciu. Stary
+bieg (jeśli jeszcze trwał) i jego stara blokada idą do GC razem ze starą instancją - `agent-turn`
+wywołany na NOWEJ instancji zaraz po reloadzie NIGDY nie dostanie `busy` z powodu biegu
+sprzed przeładowania, nawet jeśli ten bieg fizycznie jeszcze pracuje w tle (osierocony bieg z
+wygranej budzika działa DOKŁADNIE tak samo - kontynuuje niewidoczny dla nikogo, `tools=readonly`
+gwarantuje że nic nie zapisze).
 
 **Koperta `verified`/`effect`:** TEN SAM mechanizm migawki `brain.md` + `brain/` przed/po co
 `agent-prompt` (`snapshotBrain`/`brainStatVerdict` w `commands.ts`) - `getActiveSystemPromptWithMemory`
-potrafi samonaprawić indeks pamięci tą samą drogą, więc koperta mierzy to uczciwie zamiast
-obiecywać czystość na wiarę, w tym na gałęzi błędu (np. `model_unavailable` PO udanej budowie
-promptu niesie zmierzony `effect`, nie `'unchanged'` z automatu).
+potrafi nie tylko SAMONAPRAWIĆ, ale i UTWORZYĆ OD ZERA `brain.md`, gdy agent go jeszcze nie ma
+(`AgentMemory.getBrain()` ok. l.1381-1391: `probeFile(...) === 'missing'` -> zapis świeżego
+indeksu) - to NIE jest blokowane ani specjalnie sygnalizowane osobnym kodem błędu, tylko
+uczciwie RAPORTOWANE przez `effect:'changed'` (migawka `null` przed -> plik po), dokładnie jak
+przy samonaprawie istniejącego indeksu. Koperta mierzy to zamiast obiecywać czystość na wiarę, w
+tym na gałęzi błędu (np. `model_unavailable` PO udanej budowie promptu niesie zmierzony `effect`,
+nie `'unchanged'` z automatu).
+
+**Maska sekretów na wyjściu (K-adwersarialna, poprawka 2026-09-26):** komunikaty `turn_failed`
+(rzucone w `agentTurn.ts` - budowa promptu, model, pętla) i `internal` TEJ komendy (złapany
+wyjątek w `commands.ts`, np. `resolveHost()` rzucił) przechodzą przez `maskSensitiveData`
+(`core/security/SensitiveDataGuard.js`, plik BEZ importów - zero kosztu runtime, ta sama maska,
+której `MCPClient`/`SubAgentRunner`/`ExternalMcpManager` już używają na błędach narzędzi) -
+surowy fragment żądania/nagłówka (`Authorization: Bearer sk-...`) z warstwy transportu modelu
+nie ma prawa wyjść w JSON-ie. Maskowanie jest SPECYFICZNE dla `agent-turn` (wołane w JEJ WŁASNYM
+catchu w `commands.ts`, nie w dzielonym `errorMessage()`/`runGuardedAlways`/`runGuardedReady`) -
+pozostałe cztery komendy fali 1 (zakaz zadania: nie ruszać ich poza liczeniem nazw) mają
+`internal`/`error.message` BEZ ZMIAN.
 
 ## Rozwiązywanie hosta (`hostPlugin.ts`)
 
@@ -254,10 +322,24 @@ rozmiar w raporcie zadania, ~52 KB):
 - K-agent-turn: `@plugin/modules/agent-loop/AgentLoop.js` - `runAgentLoop`,
   `@plugin/modules/agent-loop/MessageStore.js` - `ArrayMessageStore`,
   `@plugin/modules/models/modelResolver.js` - `createModelForRole` (wszystkie trzy dynamiczne
-  `await import(...)` w `main.ts`, `CliDeps.loadAgentTurnRuntime`). ŚWIADOMIE pliki NAJWĘŻSZE, nie
-  barrele `@plugin/modules/agent-loop/index.js`/`@plugin/modules/models/index.js` - ten drugi
-  ciągnąłby WSZYSTKICH dostawców modeli (`providers/*.ts`) razem z transportem HTTP do tej małej
-  wtyczki. Patrz gotcha "pętla i resolver modelu są zbundlowane osobno" niżej.
+  `await import(...)` w `main.ts`, `CliDeps.loadAgentTurnRuntime`). Pliki NAJWĘŻSZE, jakie
+  produkcja w ogóle ma (nie barrele `@plugin/modules/agent-loop/index.js`/
+  `@plugin/modules/models/index.js`), ale **NIE są "lekkie" w sensie, w jakim jest nim
+  `consolidationStatus.js`/`SensitiveDataGuard.js` niżej** (K-adwersarialna, poprawka
+  2026-09-26 - wcześniejsza wersja tego akapitu obiecywała "lekko", to było niedokładne):
+  `modelResolver.js` importuje `./registry.js`, a TEN importuje WSZYSTKICH DZIEWIĘCIU dostawców
+  modeli (`providers/anthropic.js`/`deepseek.js`/`gemini.js`/`groq.js`/`lm_studio.js`/
+  `ollama.js`/`open_router.js`/`openai.js`/`xai.js`) plus `./ChatModel.js` (który sam importuje
+  `core/index.js`, cały barrel core) i `./requestGate.js`; `AgentLoop.js` też importuje
+  `core/index.js` (przez `countTokensSimple`) i `core/i18n/index.js`. Innymi słowy: dociągnięcie
+  produkcyjnej pętli/resolvera modelu do companiona ZAWSZE ciągnie transport HTTP wszystkich
+  platform i core barrel - to jest CENA `agent-turn` (bundla już nie da się utrzymać w okolicy
+  ~52 KB z fali 1), zaakceptowana świadomie, bo alternatywą byłoby kopiowanie logiki pętli/
+  resolvera (zakazane - "NIE kopiujemy treści promptu ani mechaniki pętli", nagłówek
+  `lib/runTurn.ts`). Zakaz barreli `@plugin/modules/agents/index.js`/`@plugin/modules/memory/index.js`
+  jako WARTOŚCI runtime'owych zostaje bez zmian - `agent-turn` importuje z nich WYŁĄCZNIE typy
+  (`import type { Agent }`), zero runtime'u. Patrz gotcha "pętla i resolver modelu są
+  zbundlowane osobno" niżej.
 
 **NIGDY barrele modułów runtime'owo** (`@plugin/modules/agents/index.js`,
 `@plugin/modules/memory/index.js`) - ciągną całe drzewo modułu (UI, CSS, cały silnik pamięci).
