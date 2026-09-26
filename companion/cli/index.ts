@@ -14,6 +14,7 @@ export type {
     StatusData,
     AgentPromptData,
     MemoryStatusData,
+    AgentTurnData,
 } from './commands.js';
 
 export type { CliEffect, CliErrorCode, CliResponse } from './response.js';

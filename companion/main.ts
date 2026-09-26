@@ -30,6 +30,8 @@ import { log } from './logger.js';
 import { COMPANION_BUILT_AT, COMPANION_PLUGIN_COMMIT, COMPANION_PLUGIN_TREE_DIRTY } from './buildInfo.js';
 
 import type { SelfTestPlugin } from '@plugin/core/selftest.js';
+import type { Agent } from '@plugin/modules/agents/index.js';
+import type { AgentTurnModel } from './agentTurn.js';
 import type { CliFlags, CliHandler, RegisteredCliHandler } from '../test-support/obsidian.js';
 
 export default class PkmAssistantDevPlugin extends Plugin {
@@ -82,6 +84,27 @@ export default class PkmAssistantDevPlugin extends Plugin {
                 });
             },
             consolidationStatus: getConsolidationStatus,
+            // `agent-turn`: trzy zależności produkcyjne dociągnięte DYNAMICZNIE, z NAJWĘŻSZYCH
+            // plików (nie barreli `modules/agent-loop/index.js`/`modules/models/index.js` -
+            // ten drugi ciągnąłby WSZYSTKICH dostawców modeli razem z transportem HTTP; ten
+            // sam wzorzec co `selfTest` wyżej). Wołane PRZY KAŻDYM wywołaniu komendy - patrz
+            // `companion/CLAUDE.md`, gotcha o zbundlowanej pętli/resolverze.
+            loadAgentTurnRuntime: async () => {
+                const { runAgentLoop } = await import('@plugin/modules/agent-loop/AgentLoop.js');
+                const { ArrayMessageStore } = await import('@plugin/modules/agent-loop/MessageStore.js');
+                const { createModelForRole } = await import('@plugin/modules/models/modelResolver.js');
+                return {
+                    runAgentLoop,
+                    createStore: messages => new ArrayMessageStore(messages),
+                    createModel: (hostRaw: Record<string, unknown>, agent: Agent) => createModelForRole(
+                        hostRaw as unknown as Parameters<typeof createModelForRole>[0],
+                        'main',
+                        agent as unknown as Parameters<typeof createModelForRole>[2],
+                        null,
+                        true,
+                    ) as unknown as AgentTurnModel | null,
+                };
+            },
         });
         log.debug('onload', result.skipped
             ? 'registerCliHandler niedostępny (Obsidian < 1.12.2) - zero komend'
