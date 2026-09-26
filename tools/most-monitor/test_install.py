@@ -56,6 +56,15 @@ class InstallTests(unittest.TestCase):
         salt=json.loads((self.dest/'config.json').read_text())['identitySalt']
         for p in self.vault.rglob('*'):
             if p.is_file():self.assertNotIn(salt,p.read_text(errors='replace'))
+    def test_codex_only_install_needs_no_claude_binary(self):
+        self.dest.mkdir()
+        (self.dest/'config.json').write_text(json.dumps({'identitySalt':'a'*64,'enabledProviders':['codex','claude'],'claudePath':'C:/old/vendor/claude.exe'}),encoding='utf-8')
+        with patch('builtins.print'):
+            install_local.install(self.vault,self.dest,self.exe,None,self.exe,providers=['codex'])
+        config=json.loads((self.dest/'config.json').read_text())
+        self.assertEqual(['codex'],config['enabledProviders'])
+        self.assertNotIn('claudePath',config)
+        self.assertFalse((self.dest/'vendor/claude-2.1.278.exe').exists())
     def test_no_process_restart_code(self):
         # Install only copies artifacts and emits a launcher; executing is separate.
         import inspect

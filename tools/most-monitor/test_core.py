@@ -80,3 +80,18 @@ class CoreTests(unittest.TestCase):
             def notify(self,a):return False
         self.c.close();self.c=MonitorCore(self.d.name,host_id='h',notifier=Note());self.put(97);self.c.deliver_pending();self.put(98,T+60)
         self.assertEqual('error',self.c.snapshot(T+60)['notificationStatus'])
+    def test_disabled_provider_is_hidden_after_restart_but_history_is_retained(self):
+        class Note:
+            def __init__(self): self.items=[]
+            def notify(self,a): self.items.append(a);return True
+        self.c.close();note=Note();self.c=MonitorCore(self.d.name,host_id='h',notifier=note)
+        self.c.ingest([account(97,provider='claude',accountRef='claude-fixture')],T)
+        self.assertEqual(1,len(self.c.history()))
+        self.c.close();self.c=MonitorCore(self.d.name,host_id='h',notifier=note,enabled_providers=['codex'])
+        snapshot=self.c.snapshot(T+1)
+        self.assertEqual([],snapshot['accounts']);self.assertEqual([],snapshot['alerts'])
+        self.assertEqual([],self.c.history());self.assertEqual(1,self.c.db.execute("SELECT COUNT(*) FROM samples WHERE provider='claude'").fetchone()[0])
+        self.c.deliver_pending();self.assertEqual([],note.items)
+        exported=json.loads((Path(self.d.name)/'most-snapshot.json').read_text())
+        self.assertEqual([],exported['accounts']);self.assertEqual([],exported['alerts'])
+        self.assertEqual([],self.c._load_raw()['accounts']);self.assertEqual([],self.c._load_raw()['alerts'])

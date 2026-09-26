@@ -19,3 +19,50 @@ class LegacyTest(unittest.TestCase):
             self.assertFalse(asyncio.run(scope['micro_ping'](object())))
         health=next(n for n in tree.body if isinstance(n,ast.AsyncFunctionDef) and n.name=='backend_alive')
         self.assertIn('client.get',ast.unparse(health));self.assertNotIn('client.post',ast.unparse(health))
+
+    def test_tray_adapter_reads_only_fresh_codex_snapshot_and_keeps_windows_separate(self):
+        source=Path(__file__).with_name('legacy').joinpath('most.py').read_text(encoding='utf-8')
+        tree=ast.parse(source)
+        fn=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='_monitor_usage')
+        import math
+        scope={'WEEKLY_MIN_MINUTES':10080,'math':math}
+        exec(compile(ast.Module(body=[fn],type_ignores=[]),'legacy-usage-adapter','exec'),scope)
+        snapshot={'validUntil':500,'accounts':[
+            {'provider':'codex','status':'fresh','validUntil':500,'observedAt':400,'windows':[
+                {'poolId':'a','windowId':'short','label':'5h','windowMinutes':300,'usedPercent':4,'resetsAt':600},
+                {'poolId':'b','windowId':'week','label':'7d','windowMinutes':10080,'usedPercent':12,'resetsAt':700},
+            ]},
+            {'provider':'claude','status':'fresh','validUntil':500,'observedAt':400,'windows':[
+                {'poolId':'claude','windowId':'week','windowMinutes':10080,'usedPercent':91,'resetsAt':700},
+            ]},
+        ]}
+        usage=scope['_monitor_usage'](snapshot,450)
+        self.assertEqual([w['used_percent'] for w in usage['windows']], [4,12])
+        self.assertEqual(usage['short']['used_percent'],4)
+        self.assertEqual(usage['weekly']['used_percent'],12)
+        stale=scope['_monitor_usage'](snapshot,501)
+        self.assertIsNone(stale['short'])
+        self.assertIsNone(stale['weekly'])
+        self.assertTrue(all(w['used_percent'] is None for w in stale['windows']))
+        aged=dict(snapshot,validUntil=900,accounts=[dict(snapshot['accounts'][0],validUntil=900,observedAt=100)])
+        old=scope['_monitor_usage'](aged,450)
+        self.assertEqual(old['status'],'stale')
+        self.assertTrue(all(w['used_percent'] is None for w in old['windows']))
+
+    def test_legacy_never_reads_chatmock_quota_file(self):
+        source=Path(__file__).with_name('legacy').joinpath('most.py').read_text(encoding='utf-8')
+        tree=ast.parse(source)
+        read=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='read_usage')
+        self.assertIn('MONITOR_SNAPSHOT_PATH',ast.unparse(read))
+        self.assertNotIn('USAGE_PATH',ast.unparse(read))
+        self.assertIn('BASE_DIR / "most-monitor" / "state" / "most-snapshot.json"',source)
+
+    def test_tray_warns_for_high_usage_when_window_duration_is_unknown(self):
+        source=Path(__file__).with_name('legacy').joinpath('most.py').read_text(encoding='utf-8')
+        tree=ast.parse(source)
+        fn=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='_usage_warning')
+        scope={}
+        exec(compile(ast.Module(body=[fn],type_ignores=[]),'legacy-warning','exec'),scope)
+        usage={'status':'fresh','windows':[{'fresh':True,'used_percent':95,'window_minutes':None}]}
+        self.assertTrue(scope['_usage_warning'](usage))
+        self.assertFalse(scope['_usage_warning']({'status':'stale','windows':[{'fresh':False,'used_percent':95}]}))

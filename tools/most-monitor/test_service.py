@@ -49,3 +49,15 @@ class ServiceTests(unittest.TestCase):
   with patch('monitor.load_config',return_value={'port':1236}),patch('urllib.request.urlopen',return_value=response) as urlopen,patch('builtins.print'):
    self.assertEqual(0,main(['usage_status','--max-age','60','--provider','claude']))
    self.assertIn('maxAge=60',urlopen.call_args.args[0].full_url);self.assertEqual(45,urlopen.call_args.kwargs['timeout'])
+ def test_enabled_codex_only_does_not_call_claude_collector(self):
+  calls=[]
+  def codex(): calls.append('codex');return account(20,now=time.time())
+  def claude(): calls.append('claude');return account(20,provider='claude',accountRef='c',now=time.time())
+  service=Service({'dataDir':self.d.name,'notifications':False,'enabledProviders':['codex']},collectors={'codex':codex,'claude':claude})
+  try:
+   snapshot=service.refresh()
+   self.assertEqual(['codex'],calls);self.assertEqual(['codex'],[a['provider'] for a in snapshot['accounts']])
+  finally:
+   # refresh publishes its result just before starting the notifier worker.
+   while service.delivery_thread and service.delivery_thread.ident is None: time.sleep(.001)
+   service.stop();service.core.close()
