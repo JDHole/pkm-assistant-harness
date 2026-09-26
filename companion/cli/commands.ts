@@ -22,6 +22,9 @@
 
 import { log } from '../logger.js';
 import { okResponse, errorResponse, serializeCliResponse } from './response.js';
+// K-adwersarialna/D: maska sekretów na `agent-turn:internal` (patrz `runAgentTurnCommand` catch
+// niżej) - plik bez importów (zero kosztu runtime), ta sama granica co `MCPClient`/`SubAgentRunner`.
+import { maskSensitiveData } from '@plugin/core/security/SensitiveDataGuard.js';
 
 // Typy CLI z LOKALNEJ atrapy (`test-support/obsidian.ts`), nie z bare specyfiera `obsidian` -
 // ten pakiet nie jest zależnością tego repo (harness testuje przez atrapę, nie przez oficjalny
@@ -98,6 +101,13 @@ export interface CliDeps {
      * `companion/CLAUDE.md`); testy podają atrapy o tym samym kształcie.
      */
     loadAgentTurnRuntime: () => Promise<Pick<AgentTurnDeps, 'runAgentLoop' | 'createStore' | 'createModel'>>;
+    /**
+     * `agent-turn`: przelicznik jednostki timeoutu (mnożnik ms zastosowany do `flags.timeout*1000`
+     * PRZED `setTimeout`) - WYŁĄCZNIE do testów (K-adwersarialna/B: dowód wyścigu z PRAWDZIWYM
+     * `setTimeout`, bez czekania na produkcyjne 10-600 s minimum flagi `timeout`). Domyślnie `1`
+     * (bez zmiany) - produkcja (`main.ts`) tego pola nie podaje w ogóle.
+     */
+    agentTurnTimeoutScale?: number;
 }
 
 /** `pkm-assistant-dev:status` - działa ZAWSZE, nawet gdy hosta nie ma w ogóle. */
@@ -600,7 +610,7 @@ async function runAgentTurnCommand(
                 createStore: runtime.createStore,
                 createModel: runtime.createModel,
                 now: deps.now ? deps.now : () => new Date(),
-                setTimer: (cb, ms) => setTimeout(cb, ms),
+                setTimer: (cb, ms) => setTimeout(cb, ms * (deps.agentTurnTimeoutScale ?? 1)),
                 clearTimer: handle => clearTimeout(handle as ReturnType<typeof setTimeout>),
             };
 
@@ -620,7 +630,10 @@ async function runAgentTurnCommand(
             lock.release();
         }
     } catch (e) {
-        return serializeCliResponse(errorResponse(id, 'internal', errorMessage(e), 'unknown'));
+        // K-adwersarialna/D: maskowanie TYLKO tutaj (i w `turn_failed` własnym `agentTurn.ts`) -
+        // `errorMessage`/`runGuardedAlways`/`runGuardedReady` (reszta komend) zostają nietknięte,
+        // zakaz zadania mówi nie ruszać ich poza liczeniem nazw.
+        return serializeCliResponse(errorResponse(id, 'internal', maskSensitiveData(errorMessage(e)), 'unknown'));
     }
 }
 
