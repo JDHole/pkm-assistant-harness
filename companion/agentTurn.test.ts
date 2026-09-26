@@ -373,17 +373,97 @@ test('runAgentTurn: tools=none -> KAŻDE narzędzie odrzucone (toolsOffered pust
     t.is(calls.length, 0);
 });
 
+// ── K-adwersarialna/E: luka wskazana w recenzji - rejestr ZEZWALA na "write" (agent ma pełny
+// dostęp wg hosta), a mimo to tryb readonly go tnie na poziomie WYKONANIA (nie tylko widoczności). ──
+
+test('runAgentTurn: rejestr/filterByAgent ZEZWALA na "write" (agent z pełnym dostępem), tools=readonly mimo to je odrzuca - mcpClient 0 wywołań', async t => {
+    // Rejestr, w odróżnieniu od testów wyżej, NIE ma żadnej listy zabronionych - "write" jest
+    // tu w pełni dozwolone agentowi (np. brak `disabled_tools`, serwer wbudowany). Bariera musi
+    // więc stać w `READONLY_TOOLS`/`resolveAgentTurnTools` tej komendy, nie w konfiguracji hosta.
+    const registryAllowsEverything = makeToolRegistry([{ name: 'read' }, { name: 'list' }, { name: 'search' }, { name: 'write' }, { name: 'delete' }, { name: 'create_folder' }]);
+    const { client, calls } = makeMcpClient();
+    const host = makeAgentTurnHost({ mcpClient: client, toolRegistry: registryAllowsEverything });
+    let rejectionMessage = '';
+    const loopImpl = async (options: RunAgentLoopOptions): Promise<RunAgentLoopResult> => {
+        const offered = (options.resolveTools?.() ?? []) as Array<{ function: { name: string } }>;
+        t.deepEqual(offered.map(d => d.function.name).sort(), ['list', 'read', 'search'], 'agent ma "write" w rejestrze, ale agent-turn go NIE oferuje modelowi');
+        try {
+            await options.executeToolCall(toolCall('write', 'call_write'));
+        } catch (e) {
+            rejectionMessage = (e as Error).message;
+        }
+        return defaultLoopResult();
+    };
+    const deps = makeAgentTurnDeps({ loopImpl });
+    const outcome = await runAgentTurn(host, fakeAgent('Jaskier'), { ...BASE_FLAGS, tools: 'readonly' }, deps);
+
+    t.true(outcome.ok);
+    t.is(calls.length, 0, 'host.mcpClient.executeToolCall NIGDY wołane, mimo że rejestr zezwala agentowi na "write"');
+    t.true(rejectionMessage.includes('write') && rejectionMessage.includes('not allowed'), rejectionMessage);
+});
+
+// ── K-adwersarialna/C: ok/error UCZCIWE - mcpClient przy błędzie NIE rzuca, zwraca
+// {isError:true, error} (MCPClient.ts ok. l.1195-1204) - to MA policzyć się jako ok:false. ────
+
+test('runAgentTurn: mcpClient zwraca {isError:true, error:"Permission denied"} (BEZ rzutu) -> toolCalls[].ok=false, error niepusty', async t => {
+    const { client } = makeMcpClient(() => ({ isError: true, error: 'Permission denied: Strefa No-Go' }));
+    const host = makeAgentTurnHost({ mcpClient: client, toolRegistry: makeToolRegistry([{ name: 'read' }]) });
+    const loopImpl = async (options: RunAgentLoopOptions): Promise<RunAgentLoopResult> => {
+        const raw = await options.executeToolCall(toolCall('read', 'call_read'));
+        await options.hooks?.onIterationStart?.(0);
+        await options.hooks?.onToolResults?.([{ toolCall: { id: 'call_read', name: 'read' }, result: JSON.stringify(raw) }], 0);
+        return {
+            finalText: 'gotowe',
+            toolsUsed: ['read'],
+            toolCallDetails: [{ name: 'read', args: {}, resultPreview: JSON.stringify(raw) }], // AgentLoop sam NIE ustawia error:true - raw NIE był rzucony
+            usage: { prompt_tokens: 1, completion_tokens: 1 },
+            iterations: 1,
+            stoppedBy: 'natural',
+        };
+    };
+    const deps = makeAgentTurnDeps({ loopImpl });
+    const outcome = await runAgentTurn(host, fakeAgent('Jaskier'), BASE_FLAGS, deps);
+
+    t.true(outcome.ok);
+    if (!outcome.ok) return;
+    t.is(outcome.data.toolCalls.length, 1);
+    t.false(outcome.data.toolCalls[0].ok, 'isError:true zwrócone (nie rzucone) MA policzyć się jako ok:false');
+    t.true(!!outcome.data.toolCalls[0].error && outcome.data.toolCalls[0].error.includes('Permission denied'));
+});
+
+test('runAgentTurn: mcpClient zwraca sukces (bez isError) -> toolCalls[].ok=true', async t => {
+    const { client } = makeMcpClient(() => ({ success: true, content: 'tresc pliku' }));
+    const host = makeAgentTurnHost({ mcpClient: client, toolRegistry: makeToolRegistry([{ name: 'read' }]) });
+    const loopImpl = async (options: RunAgentLoopOptions): Promise<RunAgentLoopResult> => {
+        const raw = await options.executeToolCall(toolCall('read', 'call_read'));
+        await options.hooks?.onToolResults?.([{ toolCall: { id: 'call_read', name: 'read' }, result: JSON.stringify(raw) }], 0);
+        return { ...defaultLoopResult(), toolCallDetails: [{ name: 'read', args: {}, resultPreview: JSON.stringify(raw) }] };
+    };
+    const deps = makeAgentTurnDeps({ loopImpl });
+    const outcome = await runAgentTurn(host, fakeAgent('Jaskier'), BASE_FLAGS, deps);
+
+    t.true(outcome.ok);
+    if (outcome.ok) t.true(outcome.data.toolCalls[0].ok);
+});
+
 // ═══════════════════════════════════════════════════════════════════════════════════════
 //  Punkt 7: brak hooków czatu - `runAgentLoop` wołane BEZ onUsage/onToolResults/beforeContinue,
 //  store dostaje DOKŁADNIE [system, user]
 // ═══════════════════════════════════════════════════════════════════════════════════════
 
-test('runAgentTurn: options.hooks NIE jest podane (zero onUsage/onToolResults/beforeContinue - zero zapisu do sesji/TokenTrackera)', async t => {
+test('runAgentTurn: hooki CZATU (onUsage/beforeContinue/onToolCallsParsed) NIE są podane - zero zapisu do sesji/TokenTrackera; onIterationStart/onToolResults SĄ (K-adwersarialna B/C: księgowość LOKALNA, bez zapisu)', async t => {
     const fixture: AgentTurnDepsFixture = {};
     const deps = makeAgentTurnDeps(fixture);
     await runAgentTurn(makeAgentTurnHost(), fakeAgent('Jaskier'), BASE_FLAGS, deps);
 
-    t.is(fixture.capturedOptions?.hooks, undefined);
+    const hooks = fixture.capturedOptions?.hooks;
+    t.truthy(hooks, 'hooks powinno być podane (onIterationStart/onToolResults - lokalna księgowość)');
+    t.is(hooks?.onUsage, undefined, 'onUsage pisze do TokenTrackera w czacie - agent-turn go nie podaje');
+    t.is(hooks?.beforeContinue, undefined, 'beforeContinue robi kompresję/nudges sesji w czacie - agent-turn go nie podaje');
+    t.is(hooks?.onToolCallsParsed, undefined, 'onToolCallsParsed tworzy placeholdery UI w czacie - agent-turn go nie podaje');
+    t.is(hooks?.onBackstop, undefined);
+    t.is(typeof hooks?.onIterationStart, 'function');
+    t.is(typeof hooks?.onToolResults, 'function');
 });
 
 test('runAgentTurn: store tworzony z DOKŁADNIE [system, user] (ArrayMessageStore - zero appendToActiveSession)', async t => {
@@ -402,11 +482,46 @@ test('runAgentTurn: store tworzony z DOKŁADNIE [system, user] (ArrayMessageStor
 //  Punkt 8: limity + timeout (shouldAbort + stopStream z timera, cleartimer w finally)
 // ═══════════════════════════════════════════════════════════════════════════════════════
 
-test('runAgentTurn: limits.maxIterations = flaga max-iterations', async t => {
+test('runAgentTurn: limity 1:1 z czatem (K-adwersarialna A) - host BEZ env.settings -> getLimits(null), same defaulty; maxIterations WYŁĄCZNIE z flagi', async t => {
     const fixture: AgentTurnDepsFixture = {};
     const deps = makeAgentTurnDeps(fixture);
-    await runAgentTurn(makeAgentTurnHost(), fakeAgent('Jaskier'), { ...BASE_FLAGS, maxIterations: 3 }, deps);
-    t.deepEqual(fixture.capturedOptions?.limits, { maxIterations: 3 });
+    await runAgentTurn(makeAgentTurnHost({ raw: {} }), fakeAgent('Jaskier'), { ...BASE_FLAGS, maxIterations: 3 }, deps);
+    t.deepEqual(fixture.capturedOptions?.limits, {
+        maxIterations: 3,
+        maxToolResultLength: 15000,
+        maxToolResultLengthPerTool: { delegate: 60000, agent_delegate: 60000 },
+        perCallTimeoutMs: 600000,
+        stallTimeoutMs: 120000,
+    });
+});
+
+test('runAgentTurn: limity - override z host.raw.env.settings.pkmAssistant.limits (walidowane jak w getLimits produkcyjnym)', async t => {
+    const fixture: AgentTurnDepsFixture = {};
+    const deps = makeAgentTurnDeps(fixture);
+    const host = makeAgentTurnHost({
+        raw: { env: { settings: { pkmAssistant: { limits: { max_tool_result_length: 5000, chat_model_call_timeout_ms: 12345 } } } } },
+    });
+    await runAgentTurn(host, fakeAgent('Jaskier'), BASE_FLAGS, deps);
+    t.is(fixture.capturedOptions?.limits?.maxToolResultLength, 5000);
+    t.is(fixture.capturedOptions?.limits?.perCallTimeoutMs, 12345);
+});
+
+test('runAgentTurn: limity - platforma xai wyłącza stallTimeoutMs (parytet z chat_streaming.ts:639-642)', async t => {
+    const fixture: AgentTurnDepsFixture = {};
+    const deps = makeAgentTurnDeps(fixture);
+    const host = makeAgentTurnHost({ raw: { env: { settings: { pkmAssistant: { chat: { platform: 'xai' } } } } } });
+    await runAgentTurn(host, fakeAgent('Jaskier'), BASE_FLAGS, deps);
+    t.is(fixture.capturedOptions?.limits?.stallTimeoutMs, 0);
+});
+
+test('runAgentTurn: limity - host.raw.env/settings o złym kształcie (nie-obiekt) -> traktowane jak brak, getLimits(null)', async t => {
+    const fixture: AgentTurnDepsFixture = {};
+    const deps = makeAgentTurnDeps(fixture);
+    for (const raw of [{ env: 'nope' }, { env: { settings: 'nope' } }, { env: null }]) {
+        const host = makeAgentTurnHost({ raw: raw as Record<string, unknown> });
+        await runAgentTurn(host, fakeAgent('Jaskier'), BASE_FLAGS, deps);
+        t.is(fixture.capturedOptions?.limits?.maxToolResultLength, 15000, JSON.stringify(raw));
+    }
 });
 
 test('runAgentTurn: modelOptions.agentName/agent = agent.name', async t => {
@@ -436,6 +551,69 @@ test('runAgentTurn: timer uzbrojony na timeoutSeconds*1000; jego callback woła 
     t.true(shouldAbortDuringLoop?.());
     t.true(outcome.ok);
     if (outcome.ok) t.is(outcome.data.stoppedBy, 'timeout', 'stoppedBy=abort + timedOut -> zmapowane na "timeout"');
+});
+
+// ── K-adwersarialna/B: termin CAŁEGO biegu jest WYŚCIGIEM, nie flagą - pętla, która WISI
+// (np. zawieszone narzędzie) NIE blokuje zwrotu. ────────────────────────────────────────────
+
+test('runAgentTurn: petla WISI (narzedzie zawieszone na zawsze) -> wyscig wygrywa budzik, zwrot NATYCHMIAST, toolCalls z lokalnej ksiegowosci (onToolResults), zero unhandled rejection', async t => {
+    let resolveHang: ((v: RunAgentLoopResult) => void) | undefined;
+    const hangingPromise = new Promise<RunAgentLoopResult>(resolve => { resolveHang = resolve; });
+    const timer: AgentTurnDepsFixture['capturedTimer'] = { cb: null, ms: null, cleared: false };
+    let stopped = false;
+    const model = fakeModel({ stopStream: () => { stopped = true; } });
+    const loopImpl = async (options: RunAgentLoopOptions): Promise<RunAgentLoopResult> => {
+        await options.hooks?.onIterationStart?.(0);
+        await options.hooks?.onToolResults?.([{ toolCall: { id: '1', name: 'read' }, result: 'tresc pliku' }], 0);
+        return hangingPromise; // symuluje narzedzie/model, ktory NIGDY nie wraca w tym tescie
+    };
+    const deps = makeAgentTurnDeps({ model, capturedTimer: timer, loopImpl });
+    const outcomePromise = runAgentTurn(makeAgentTurnHost(), fakeAgent('Jaskier'), { ...BASE_FLAGS, timeoutSeconds: 30 }, deps);
+
+    await new Promise(resolve => setImmediate(resolve));
+    t.false(timer.cleared, 'petla jeszcze wisi - budzik nie ma prawa być już wyczyszczony');
+    timer.cb?.(); // symuluje strzal budzika (bez czekania na realny zegar - jednostkowy poziom)
+
+    const outcome = await outcomePromise;
+    t.true(outcome.ok);
+    if (outcome.ok) {
+        t.is(outcome.data.stoppedBy, 'timeout');
+        t.is(outcome.data.finalText, '');
+        t.deepEqual(outcome.data.toolCalls, [{ name: 'read', args: undefined, ok: true, resultPreview: 'tresc pliku' }]);
+        t.is(outcome.data.iterations, 1);
+    }
+    t.true(stopped, 'model.stopStream() wołane mimo że sama pętla nadal wisi');
+
+    // Sprzątanie: rozwiązujemy osierocony bieg, żeby nie zostawić wiszącej promisy między
+    // testami (produkcyjnie NIKT go już nie awaituje - to jest właśnie dowód swallow: gdyby
+    // `loopSettlement` w `agentTurn.ts` nie miał obu gałęzi obsłużonych, poniższe rozstrzygnięcie
+    // - PO tym, jak funkcja już oddała wynik - kończyłoby się unhandled rejection/hałasem).
+    resolveHang?.(defaultLoopResult());
+    await new Promise(resolve => setImmediate(resolve));
+});
+
+test('CLI agent-turn: petla, ktora NIGDY sie nie konczy - PRAWDZIWY setTimeout (skalowany przez CliDeps.agentTurnTimeoutScale), timeout wraca szybko, a NASTEPNY agent-turn NIE dostaje busy', async t => {
+    const deps = makeCliDeps({
+        host: makeHost({ agentManager: makeAgentManagerFixture({ names: ['Jaskier'] }) }),
+        // Minimum publicznej flagi to 10 s - skala 0.002 daje realny odczyt ~20ms (bez zmiany
+        // zakresu 10-600 s samej flagi `timeout`, patrz K-adwersarialna/B).
+        timeoutScale: 0.002,
+        runtime: { runAgentLoop: () => new Promise<RunAgentLoopResult>(() => { /* nigdy się nie rozstrzyga */ }) },
+    });
+    const spec = buildAgentTurnSpec(deps);
+
+    const started = Date.now();
+    const timedOutResponse = JSON.parse(await spec.run({ agent: 'Jaskier', prompt: 'hej', timeout: '10' }));
+    const elapsedMs = Date.now() - started;
+
+    t.true(timedOutResponse.ok, JSON.stringify(timedOutResponse));
+    t.is(timedOutResponse.data.stoppedBy, 'timeout');
+    t.true(elapsedMs < 5000, `agent-turn powinno wrócić szybko po budziku (skala 0.002 * 10s ≈ 20ms), zajęło ${elapsedMs}ms`);
+
+    // Blokada MUSI być już wolna - drugi bieg zaraz potem NIE dostaje busy, mimo że pierwsza
+    // pętla (nigdy nierozstrzygnięta promisa) formalnie wciąż "wisi" osierocona w tle.
+    const second = JSON.parse(await spec.run({ agent: 'Jaskier', prompt: 'drugi' }));
+    t.not(second.error?.code, 'busy', JSON.stringify(second));
 });
 
 test('runAgentTurn: stoppedBy="abort" BEZ timedOut zostaje "abort" (mapowanie tylko dla realnego timeoutu)', async t => {
@@ -575,6 +753,28 @@ test('runAgentTurn: wyjątek NIE-Error (string rzucony) -> turn_failed z String(
     t.is(outcome.message, 'plain string error');
 });
 
+// ── K-adwersarialna/D: maska sekretów na turn_failed (agentTurn.ts) i internal (commands.ts). ──
+
+const FAKE_SECRET = `sk-ant-${'A'.repeat(30)}`;
+
+test('runAgentTurn: turn_failed maskuje sekret w komunikacie wyjątku (Authorization: Bearer sk-ant-...)', async t => {
+    const deps = makeAgentTurnDeps({ loopImpl: async () => { throw new Error(`Model call failed: Authorization: Bearer ${FAKE_SECRET} rejected by upstream`); } });
+    const outcome = await runAgentTurn(makeAgentTurnHost(), fakeAgent('Jaskier'), BASE_FLAGS, deps);
+    t.false(outcome.ok);
+    if (outcome.ok) return;
+    t.is(outcome.code, 'turn_failed');
+    t.false(outcome.message.includes(FAKE_SECRET), `Sekret NIE powinien wyjść w komunikacie: ${outcome.message}`);
+    t.true(outcome.message.includes('Model call failed'), 'reszta komunikatu (bez sekretu) zostaje czytelna');
+});
+
+test('CLI agent-turn: internal (wyjątek z resolveHost) maskuje sekret w komunikacie', async t => {
+    const deps = makeCliDeps({ hostError: new Error(`boom Authorization: Bearer ${FAKE_SECRET}`) });
+    const r = await runAgentTurnCli(deps, { agent: 'Jaskier', prompt: 'hej' });
+    t.false(r.ok);
+    t.is(r.error.code, 'internal');
+    t.false(r.error.message.includes(FAKE_SECRET), `Sekret NIE powinien wyjść w komunikacie: ${r.error.message}`);
+});
+
 // ═══════════════════════════════════════════════════════════════════════════════════════
 //  Testy end-to-end komendy CLI (`buildCliCommands`) - flagi, not_ready, busy, koperta
 // ═══════════════════════════════════════════════════════════════════════════════════════
@@ -621,6 +821,10 @@ interface CliDepsFixture {
     hostError?: Error;
     runtime?: Partial<AgentTurnDeps>;
     runtimeError?: Error;
+    /** K-adwersarialna/B: przelicznik jednostki timeoutu - testy realnego wyścigu (PRAWDZIWY
+     *  `setTimeout`, patrz `commands.ts` `runAgentTurnCommand`) go ustawiają na ułamek, żeby
+     *  minimum flagi (10 s) stało się milisekundami zamiast realnych 10 sekund. */
+    timeoutScale?: number;
 }
 
 function makeCliDeps(fixture: CliDepsFixture = {}): CliDeps {
@@ -643,6 +847,7 @@ function makeCliDeps(fixture: CliDepsFixture = {}): CliDeps {
             const base = makeAgentTurnDeps(fixture.runtime as AgentTurnDepsFixture);
             return { runAgentLoop: fixture.runtime?.runAgentLoop ?? base.runAgentLoop, createStore: fixture.runtime?.createStore ?? base.createStore, createModel: fixture.runtime?.createModel ?? base.createModel };
         },
+        ...(fixture.timeoutScale !== undefined ? { agentTurnTimeoutScale: fixture.timeoutScale } : {}),
     };
 }
 
