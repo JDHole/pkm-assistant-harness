@@ -11,13 +11,14 @@ from core import MonitorCore
 class Service:
     def __init__(self, config, collectors=None, notifier=None):
         self.config = config
+        self.enabled_providers = tuple(config.get('enabledProviders', ('codex', 'claude')))
         if notifier is None and config.get("notifications", True):
             try:
                 import notifier as notifier_module
                 notifier = notifier_module
             except ImportError:
                 notifier = None
-        self.core = MonitorCore(config["dataDir"], host_id=config.get('hostId'), notifier=notifier, snapshot_path=config.get('snapshotPath'))
+        self.core = MonitorCore(config["dataDir"], host_id=config.get('hostId'), notifier=notifier, snapshot_path=config.get('snapshotPath'), enabled_providers=self.enabled_providers)
         self.collectors = collectors; self.last_refresh = 0.; self.refreshing = None; self.guard = threading.Lock(); self.failures = 0
         self.cooldown = {}; self.account_cache = {}; self.attempted = {}; self.delivery_thread = None
         self.stop_event = threading.Event(); self.poll_thread = None
@@ -47,11 +48,16 @@ class Service:
         try:
             if self.collectors is None:
                 import collectors as c
-                funcs = [lambda: c.collect_codex(self.config), lambda: c.collect_claude(self.config)]
-            else: funcs = list(self.collectors)
+                collector_map = {'codex': lambda: c.collect_codex(self.config), 'claude': lambda: c.collect_claude(self.config)}
+            elif isinstance(self.collectors, dict):
+                collector_map = dict(self.collectors)
+            else:
+                # Preserve the original positional injection contract: slot 0
+                # is Codex and slot 1 is Claude, even for provider subsets.
+                collector_map = {provider: fn for provider, fn in zip(('codex', 'claude'), self.collectors)}
+            collector_map = {p: collector_map[p] for p in self.enabled_providers if p in collector_map}
             # Collector subprocess deadlines provide the hard stop; provider failures are isolated.
-            def collect(index, fn):
-                provider = ('codex', 'claude')[index] if index < 2 else str(index)
+            def collect(provider, fn):
                 cached = self.account_cache.get(provider)
                 if max_age and cached and cached.get('status') == 'fresh' and time.time() - (cached.get('observedAt') or 0) < max_age and time.time() < (cached.get('validUntil') or 0):
                     return cached
@@ -69,8 +75,8 @@ class Service:
                     delay = min(3600, max(60, old_delay * 2))
                     account['retrySeconds'] = delay; self.cooldown[provider] = time.time() + delay; self.account_cache[provider] = account
                 return account
-            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex:
-                futures = [ex.submit(collect, i, fn) for i, fn in enumerate(funcs)]
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, len(collector_map))) as ex:
+                futures = [ex.submit(collect, provider, fn) for provider, fn in collector_map.items()]
                 accounts = [f.result(timeout=40) for f in futures]
             result=self.core.ingest(accounts); self.last_refresh=time.time(); self.failures=0; future.set_result(result)
             if not self.delivery_thread or not self.delivery_thread.is_alive():
@@ -92,6 +98,10 @@ class Service:
 def load_config(path=None):
     path=Path(path or Path(__file__).with_name("config.json")); data=json.loads(path.read_text(encoding="utf-8"))
     data.setdefault("port",1236); data.setdefault("pollSeconds",300); data.setdefault("notifications",True)
+    data.setdefault('enabledProviders',['codex','claude'])
+    enabled=data['enabledProviders']
+    if not isinstance(enabled,list) or not enabled or any(p not in ('codex','claude') for p in enabled) or len(set(enabled)) != len(enabled):
+        raise ValueError('enabledProviders must contain unique provider names: codex, claude')
     if not data.get("dataDir"): raise ValueError("dataDir is required")
     return data
 

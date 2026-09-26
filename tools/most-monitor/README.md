@@ -1,12 +1,16 @@
 # Most Monitor
 
-Private subscription telemetry for JDHole OS. A separate Python process reads official Codex app-server quota RPC and Claude Code `/usage`. It never asks a model to measure usage. It does not select models or transfer workflows.
+Private subscription telemetry for JDHole OS. A separate Python process reads enabled official subscription quota sources. The `enabledProviders` config chooses `codex`, `claude`, or both; new installs default to Codex only. A missing setting in an older config remains backwards compatible and enables both. It never asks a model to measure usage, select models, or transfer workflows.
 
 ## Contract and sources
 
 See [CONTRACT.md](CONTRACT.md). SQLite and the identity salt live outside the synced vault. Only an anonymous snapshot is exported. The HTTP listener is `127.0.0.1:1236`, requires `X-Most-Client: local-v1`, rejects Origin headers, and enables no CORS. This protects against browser cross-origin requests; local processes of the same user can read the telemetry.
 
 Codex uses `account/read` and `account/rateLimits/read`; every reported bucket/window is separate. This covers Codex/Work, not all ordinary ChatGPT chat quotas. The backend permission `ordinaryUsageAllowed` is preserved independently of percentages. The ChatMock legacy snapshot is not counted as an additional subscription because it lacks an account identity.
+
+Codex executable resolution runs on every collection: `CODEX_CLI_PATH` in the process environment, the `mcp_servers.node_repl.env.CODEX_CLI_PATH` value (or legacy top-level value) in `~/.codex/config.toml`, a valid explicit `codexPath`, then the newest executable in the official per-version Codex app folder. It never falls back to `PATH` and reads no other TOML values. If all candidates are unavailable, the safe account reason is `codex_executable_unavailable`; set `CODEX_CLI_PATH` or `codexPath` to the installed app executable. Claude does not need a path or binary installed when it is disabled.
+
+Disabled providers are omitted from collection, persisted/live snapshots, exports, usage filters, history, alerts, and toast delivery. Existing SQLite samples and alert rows remain for audit; a queued toast for a provider disabled at startup is retired so it cannot fire if that provider is enabled later.
 
 Claude 2.1.278 was empirically found to return cached rows even on a failing HTTPS proxy, despite the intended SDK changelog behavior. The collector therefore requires an ordered `fetchUtilization: GET /api/oauth/usage` and `fetchUtilization: 200 after ...` in a unique debug log from the same CLI invocation. The temporary log is deleted; no credentials are copied or replayed. Missing markers fail closed to `unknown/unconfirmed_live_usage`. This diagnostic format is version sensitive. A future CLI change must pass the blocked-network regression probe before becoming the collector runtime.
 
@@ -26,14 +30,14 @@ Observed increase in each weekly scope, in Europe/Berlin, since its first compar
 
 Python 3.12+ stdlib. A small vendored Europe/Berlin TZif from the installed tzdata 2026.3 distribution supports Windows without system IANA data; licenses are in `zoneinfo/`. Core has no third-party Python imports. The official Claude executable is a separately installed vendor binary, not committed here.
 
-Run `node build_ui.cjs` first. This bundles the UI into one CommonJS file with Obsidian external; the host cannot resolve relative helper modules from a plugin entrypoint. `install_local.py --help` describes explicit local deployment. It preflights the configuration and source set, creates backups, deploys the UI and Home modules, and writes a hidden Windows startup launcher. It never starts or restarts applications. Existing private config backups remain outside the vault. The root operator then starts the monitor and reloads only the Most Status plugin after the gates pass.
+Run `node build_ui.cjs` first. This bundles the UI into one CommonJS file with Obsidian external; the host cannot resolve relative helper modules from a plugin entrypoint. `install_local.py --help` describes explicit local deployment; it defaults to `--providers codex`, so Claude is optional. It preflights the configuration and source set, creates backups, deploys the UI and Home modules, and writes a hidden Windows startup launcher. It never starts or restarts applications. Existing private config backups remain outside the vault. The root operator then starts the monitor and reloads only the Most Status plugin after the gates pass.
 
 The installer registers the local notification identity `JDHole.MostMonitor`. It does not change Windows notification preferences. If Windows returns `DisabledForUser`, the panel reports the block and retains alerts; global notification settings require the user's decision.
 
 Home deployment preserves concurrent work. The installer patches only two cleanup call positions in the current `widgetHome.js`; the checked-in full file is a review fixture, never copied. Unknown lifecycle structure fails preflight. The two Pulpit components must match their recorded pre-monitor baseline or the desired version, otherwise deployment stops before any mutation and requires a merge. A second byte comparison immediately before writing detects changes made after preflight. An already integrated Home requires zero writes.
 
-`legacy/most.py` contains the existing private Most with three localized changes: automatic usage ping disabled by default, explicit `MOST_ALLOW_LEGACY_USAGE_PING=1` compatibility opt-in, and tray refresh calling the read-only monitor. Backend health still uses GET `/v1/models`. Applying that file and restarting the idle bridge is a separate explicit deployment step.
+`legacy/most.py` contains the existing private Most with three localized changes: automatic usage ping disabled by default, explicit `MOST_ALLOW_LEGACY_USAGE_PING=1` compatibility opt-in, and tray refresh reading the compact Codex-only snapshot from `BASE_DIR/most-monitor/state/most-snapshot.json`. Backend health still uses GET `/v1/models`. Applying that file and restarting the idle bridge is a separate explicit deployment step.
 
 Tests: `python -m unittest discover -v`, `node --test ui/monitor_core.test.js home/pulpit_core.test.js`. Legacy integration tests use Python with the existing aiohttp dependency, fake backend, ports 1244/1245 and a separate base directory; never run them against the live bridge. Private UI files are CommonJS and have their own package boundary.
 
-There is no background model job, external messaging, automatic reset credit purchase, paid API fallback or automatic account switch. Extending providers means adding a collector returning this contract and registering it in the service; the renderer accepts dynamic account/window arrays.
+There is no background model job, external messaging, automatic reset credit purchase, paid API fallback or automatic account switch. Extending providers means adding a collector returning this contract and registering it in the service; the renderer shows the enabled accounts and their windows.

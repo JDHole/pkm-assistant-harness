@@ -2,7 +2,11 @@
 
 Private local tool. Python stdlib; no model calls, credential copies, API spend or runtime/model switches.
 
-`collectors.collect_codex(config)` and `collectors.collect_claude(config)` each return one account dict, including on errors. They are bounded to 40 seconds. Config is local JSON with `codexPath`, `claudePath`, `dataDir`, `snapshotPath`, `port` (1236), `pollSeconds` (300), `notifications` (true).
+`collectors.collect_codex(config)` and `collectors.collect_claude(config)` each return one account dict, including on errors. They are bounded to 40 seconds. Config is local JSON with `dataDir`, `snapshotPath`, `identitySalt`, `enabledProviders`, `codexPath` (optional explicit pin), `claudePath` (needed only when Claude is enabled), `port` (1236), `pollSeconds` (300), and `notifications` (true). `enabledProviders` accepts a nonempty unique subset of `codex` and `claude`. A missing setting in existing configs defaults to both for compatibility; new installs default to `['codex']`.
+
+Codex binary resolution happens for every collection. In order, use process `CODEX_CLI_PATH`, the narrowly parsed `mcp_servers.node_repl.env.CODEX_CLI_PATH` (or legacy top-level key) in the actual `~/.codex/config.toml`, a valid explicit `codexPath`, then the newest file under the official user-local `AppData/Local/OpenAI/Codex/bin/*/codex.exe` install. Never use `PATH` or disclose/read any other TOML values. If none is available, return `error/codex_executable_unavailable` with no paths in the reason. The configured `dataDir` remains the subprocess working directory. Claude collection and its CLI path are never touched while disabled.
+
+Disabled providers are excluded from collector scheduling and every current snapshot/export/history/alert/notification view. Their SQLite samples and alert records are retained. Pending notifications belonging to a provider disabled on service start are retired without delivery, so re-enabling later does not send an old toast.
 
 Times are UTC Unix seconds. Numbers must be finite; null is not zero. All text is data, never HTML. No email/raw ID/token output.
 
