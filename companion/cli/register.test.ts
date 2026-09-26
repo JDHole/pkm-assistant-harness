@@ -27,6 +27,9 @@ function makeDeps(): CliDeps {
             throw new Error('not used in this test file');
         },
         now: () => new Date('2026-09-20T00:00:00.000Z'),
+        loadAgentTurnRuntime: async () => {
+            throw new Error('not used in this test file');
+        },
     };
 }
 
@@ -64,10 +67,11 @@ test('P1: registerCliHandler wołany NA hoście (this działa) - realistyczna im
         'pkm-assistant-dev:selftest',
         'pkm-assistant-dev:agent-prompt',
         'pkm-assistant-dev:memory-status',
+        'pkm-assistant-dev:agent-turn',
     ]);
     t.deepEqual(result.failed, []);
     t.is(result.skipped, null);
-    t.is(host.calls.length, 4);
+    t.is(host.calls.length, 5);
     t.true(host.calls.every(call => call.manifestName === 'PKM Assistant Dev'));
 });
 
@@ -86,6 +90,7 @@ test('rejestruje wszystkie cztery komendy z LITERALNYMI id/flagami przekazanymi 
         'pkm-assistant-dev:selftest',
         'pkm-assistant-dev:agent-prompt',
         'pkm-assistant-dev:memory-status',
+        'pkm-assistant-dev:agent-turn',
     ];
     t.deepEqual(result, { registered: expectedIds, skipped: null, failed: [] });
     t.deepEqual(calls.map(c => c.command), expectedIds);
@@ -100,6 +105,7 @@ test('rejestruje wszystkie cztery komendy z LITERALNYMI id/flagami przekazanymi 
     t.deepEqual(flagNames(calls[1].flags), ['format'], 'selftest');
     t.deepEqual(flagNames(calls[2].flags), ['agent', 'section', 'format'], 'agent-prompt');
     t.deepEqual(flagNames(calls[3].flags), ['agent', 'format'], 'memory-status');
+    t.deepEqual(flagNames(calls[4].flags), ['agent', 'prompt', 'tools', 'max-iterations', 'timeout', 'format'], 'agent-turn');
 
     t.is(calls[2].flags?.agent.required, true, 'agent-prompt: agent required');
     t.falsy(calls[2].flags?.section?.required, 'agent-prompt: section NIE required');
@@ -108,9 +114,15 @@ test('rejestruje wszystkie cztery komendy z LITERALNYMI id/flagami przekazanymi 
     t.falsy(calls[3].flags?.format?.required, 'memory-status: format NIE required');
     t.falsy(calls[0].flags?.format?.required, 'status: format NIE required');
     t.falsy(calls[1].flags?.format?.required, 'selftest: format NIE required');
+    t.is(calls[4].flags?.agent.required, true, 'agent-turn: agent required');
+    t.is(calls[4].flags?.prompt.required, true, 'agent-turn: prompt required');
+    t.falsy(calls[4].flags?.tools?.required, 'agent-turn: tools NIE required');
+    t.falsy(calls[4].flags?.['max-iterations']?.required, 'agent-turn: max-iterations NIE required');
+    t.falsy(calls[4].flags?.timeout?.required, 'agent-turn: timeout NIE required');
+    t.falsy(calls[4].flags?.format?.required, 'agent-turn: format NIE required');
 });
 
-test('host rzucajacy przy DRUGIEJ komendzie (duplikat) -> pozostale trzy zarejestrowane, jedna w failed', t => {
+test('host rzucajacy przy DRUGIEJ komendzie (duplikat) -> pozostale cztery zarejestrowane, jedna w failed', t => {
     let callIndex = 0;
     const host: CliHost = {
         registerCliHandler: () => {
@@ -120,7 +132,7 @@ test('host rzucajacy przy DRUGIEJ komendzie (duplikat) -> pozostale trzy zarejes
     };
     const result = registerCliCommands(host, makeDeps());
 
-    t.deepEqual(result.registered, ['pkm-assistant-dev:status', 'pkm-assistant-dev:agent-prompt', 'pkm-assistant-dev:memory-status']);
+    t.deepEqual(result.registered, ['pkm-assistant-dev:status', 'pkm-assistant-dev:agent-prompt', 'pkm-assistant-dev:memory-status', 'pkm-assistant-dev:agent-turn']);
     t.deepEqual(result.failed, [{ id: 'pkm-assistant-dev:selftest', message: 'command already registered' }]);
     t.is(result.skipped, null);
 });

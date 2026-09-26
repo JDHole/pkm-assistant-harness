@@ -8,11 +8,12 @@
  * `app.plugins.plugins['pkm-assistant']` (`companion/hostPlugin.ts`). Ten scenariusz stawia
  * OBIE wtyczki w JEDNEJ atrapie `app`: prawdziwy plugin (jak dotąd, przez `bootPlugin`) I
  * wtyczkę-nosiciela (`new CompanionPlugin(app, manifest); companion.onload()`), wpina pluginu
- * pod `app.plugins.plugins['pkm-assistant']`, i woła cztery komendy `pkm-assistant-dev:*`
- * dokładnie tak, jak zrobiłby to Obsidian z CLI — `handler(params)` na surowym worku
- * `{klucz: 'wartość'}`, parsując JSON, który handler oddaje na "stdout".
+ * pod `app.plugins.plugins['pkm-assistant']`, i woła cztery z PIĘCIU komend `pkm-assistant-dev:*`
+ * (fala 1, czysty odczyt - piąta, `agent-turn`, fala 2 produkcyjnej pętli, ma własny scenariusz
+ * `48_cli_agent_turn`) dokładnie tak, jak zrobiłby to Obsidian z CLI — `handler(params)` na
+ * surowym worku `{klucz: 'wartość'}`, parsując JSON, który handler oddaje na "stdout".
  *
- * `liveSkip`: cztery komendy CLI nie dotykają modelu w ogóle (czysty odczyt stanu hosta) —
+ * `liveSkip`: te cztery komendy CLI nie dotykają modelu w ogóle (czysty odczyt stanu hosta) —
  * bieg na żywym DeepSeeku nie dodałby nic ponad offline, tylko kosztowałby. Tura modelu w tym
  * scenariuszu jest tu WYŁĄCZNIE dlatego, że `_runner.ts` zawsze odpala jedną (wzór
  * `45_nowy_agent_pusta_ekipa`/`46_boot_bez_starterow`) — cała weryfikacja CLI dzieje się w
@@ -57,8 +58,12 @@ const CMD = {
   selftest: `${COMPANION_ID}:selftest`,
   agentPrompt: `${COMPANION_ID}:agent-prompt`,
   memoryStatus: `${COMPANION_ID}:memory-status`,
+  // K-agent-turn: piąta komenda (fala 2) - registrowana razem z resztą na TEJ SAMEJ wtyczce-
+  // nosicielu; ten scenariusz (czysty odczyt) jej nie WOŁA (patrz `48_cli_agent_turn`), tylko
+  // liczy się w kompletnym spisie `a)`/`status.data.commands` niżej.
+  agentTurn: `${COMPANION_ID}:agent-turn`,
 } as const;
-const EXPECTED_COMMAND_IDS = [CMD.status, CMD.selftest, CMD.agentPrompt, CMD.memoryStatus];
+const EXPECTED_COMMAND_IDS = [CMD.status, CMD.selftest, CMD.agentPrompt, CMD.memoryStatus, CMD.agentTurn];
 
 /** Manifest wtyczki-nosiciela dla TEGO biegu - kształt z `companion/manifest.json`, bez
  *  wczytywania pliku z dysku (scenariusz nie zależy od ścieżki repo tej wtyczki na dysku). */
@@ -159,8 +164,8 @@ export default ({
     const handlers = companion._registeredCliHandlers as Map<string, RegisteredCliHandler> | undefined;
     assert(handlers instanceof Map, 'companion._registeredCliHandlers nie jest Mapą — registerCliHandler(atrapa) się nie wywołał albo zmienił kształt.');
     assert(
-      handlers.size === 4,
-      `Oczekiwano 4 zarejestrowanych komend CLI, jest ${handlers.size}: ${[...handlers.keys()].sort().join(', ') || '(brak)'}`,
+      handlers.size === 5,
+      `Oczekiwano 5 zarejestrowanych komend CLI, jest ${handlers.size}: ${[...handlers.keys()].sort().join(', ') || '(brak)'}`,
     );
     const missing = EXPECTED_COMMAND_IDS.filter((id) => !handlers.has(id));
     assert(missing.length === 0, `Brakuje komend CLI: ${missing.join(', ')}. Zarejestrowane: ${[...handlers.keys()].sort().join(', ')}`);

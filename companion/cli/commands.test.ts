@@ -106,6 +106,10 @@ function makeHost(overrides: Partial<ResolvedHost> = {}): ResolvedHost {
         isReady: true,
         agentManager: undefined,
         indexStatus: undefined,
+        // K-agent-turn: pola nowe w `ResolvedHost` (patrz `hostPlugin.ts`) - te cztery komendy
+        // ich nie czytają, ale typ jest kompletny, więc fixture musi je nieść (domyślnie brak).
+        mcpClient: undefined,
+        toolRegistry: undefined,
         ...overrides,
     };
 }
@@ -160,6 +164,9 @@ function makeDeps(fixture: DepsFixture = {}): CliDeps {
         now: fixture.nowSequence
             ? () => fixture.nowSequence![Math.min(nowCallIndex++, fixture.nowSequence!.length - 1)]
             : () => new Date('2026-09-20T00:00:00.000Z'),
+        // K-agent-turn: te cztery komendy nigdy tego nie wołają - stub, który rzuca, gdyby
+        // jednak został użyty (testy `agent-turn` żyją w `agentTurn.test.ts`).
+        loadAgentTurnRuntime: async () => { throw new Error('loadAgentTurnRuntime not used by these four commands'); },
     };
 }
 
@@ -212,6 +219,7 @@ test('status: host nieobecny -> ready=false, agents=null, index=null, plugin=def
                 'pkm-assistant-dev:selftest',
                 'pkm-assistant-dev:agent-prompt',
                 'pkm-assistant-dev:memory-status',
+                'pkm-assistant-dev:agent-turn',
             ],
         },
     });

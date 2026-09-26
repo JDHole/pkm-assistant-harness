@@ -22,6 +22,9 @@
 
 import { log } from '../logger.js';
 import { okResponse, errorResponse, serializeCliResponse } from './response.js';
+// K-adwersarialna/D: maska sekretów na `agent-turn:internal` (patrz `runAgentTurnCommand` catch
+// niżej) - plik bez importów (zero kosztu runtime), ta sama granica co `MCPClient`/`SubAgentRunner`.
+import { maskSensitiveData } from '@plugin/core/security/SensitiveDataGuard.js';
 
 // Typy CLI z LOKALNEJ atrapy (`test-support/obsidian.ts`), nie z bare specyfiera `obsidian` -
 // ten pakiet nie jest zależnością tego repo (harness testuje przez atrapę, nie przez oficjalny
@@ -29,10 +32,22 @@ import { okResponse, errorResponse, serializeCliResponse } from './response.js';
 // przy bare specyfierze). Atrapa i tak dopasowuje się do prawdziwego Obsidiana (kontrakt
 // `Plugin#registerCliHandler`, patrz jej nagłówek), więc jest wiarygodnym źródłem tych typów.
 import type { CliData, CliFlag, CliFlags } from '../../test-support/obsidian.js';
+import type { Agent } from '@plugin/modules/agents/index.js';
 import type { AgentMemory } from '@plugin/modules/memory/index.js';
 import type { ConsolidationStatus } from '../memoryStatus.js';
 import type { CliAgentManager, ResolvedHost } from '../hostPlugin.js';
 import type { CliEffect, CliErrorCode, CliResponse } from './response.js';
+import {
+    parseIntegerFlag as parseAgentTurnIntegerFlag,
+    parsePromptFlag,
+    parseToolsFlag,
+    runAgentTurn,
+} from '../agentTurn.js';
+import type { AgentTurnAgentManager, AgentTurnDeps } from '../agentTurn.js';
+
+// Re-eksport 1:1 z `agentTurn.ts` (właściciel logiki/kształtu), tak jak `AgentPromptData`/
+// `MemoryStatusData` żyją TUTAJ - `cli/index.ts` bierze go stąd, jak resztę Data-typów.
+export type { AgentTurnData } from '../agentTurn.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════════════
 //  Kontrakty
@@ -77,6 +92,22 @@ export interface CliDeps {
     consolidationStatus: (memory: AgentMemory) => Promise<ConsolidationStatus>;
     /** Wstrzykiwalny zegar (testy) - domyślnie `new Date()`. */
     now?: () => Date;
+    /**
+     * `agent-turn`: fabryka trzech zależności produkcyjnych ciężkich do dociągnięcia statycznie
+     * (`runAgentLoop`, konstruktor store'a, resolver modelu) - wołana PRZY KAŻDYM wywołaniu
+     * komendy (jak `resolveHost`), żeby `commands.ts` nie importował ich na poziomie modułu.
+     * `main.ts` spina to DYNAMICZNYM `await import('@plugin/...')` z najwęższych plików
+     * (`AgentLoop.js`/`MessageStore.js`/`modelResolver.js`, wzorem `selfTest` - patrz
+     * `companion/CLAUDE.md`); testy podają atrapy o tym samym kształcie.
+     */
+    loadAgentTurnRuntime: () => Promise<Pick<AgentTurnDeps, 'runAgentLoop' | 'createStore' | 'createModel'>>;
+    /**
+     * `agent-turn`: przelicznik jednostki timeoutu (mnożnik ms zastosowany do `flags.timeout*1000`
+     * PRZED `setTimeout`) - WYŁĄCZNIE do testów (K-adwersarialna/B: dowód wyścigu z PRAWDZIWYM
+     * `setTimeout`, bez czekania na produkcyjne 10-600 s minimum flagi `timeout`). Domyślnie `1`
+     * (bez zmiany) - produkcja (`main.ts`) tego pola nie podaje w ogóle.
+     */
+    agentTurnTimeoutScale?: number;
 }
 
 /** `pkm-assistant-dev:status` - działa ZAWSZE, nawet gdy hosta nie ma w ogóle. */
@@ -123,6 +154,7 @@ const STATUS_DESCRIPTION = 'Report the host plugin\'s liveness (pkm-assistant): 
 const SELFTEST_DESCRIPTION = 'Run the host plugin\'s built-in self-test and return its report as JSON, without writing a log file or showing a Notice.';
 const AGENT_PROMPT_DESCRIPTION = 'Inspect one agent\'s system prompt on the host plugin: section breakdown with token counts, or the full content of one section.';
 const MEMORY_STATUS_DESCRIPTION = 'Report memory consolidation status for one agent or all agents on the host plugin (thresholds, counters, whether consolidation would trigger).';
+const AGENT_TURN_DESCRIPTION = 'Run one turn of the host plugin\'s production agent loop for one agent on a live prompt, in a safe mode (autonomy=yolo, tools limited to read/list/search, nothing written to chat/session memory). Returns the turn as JSON for prompt-eval tooling.';
 
 // ═══════════════════════════════════════════════════════════════════════════════════════
 //  Rozwiązywanie imienia agenta - (1) dokładne dopasowanie, (2) bez wielkości liter jeśli JEDNOZNACZNE
@@ -484,11 +516,133 @@ async function runMemoryStatus(id: string, params: CliData, deps: CliDeps, am: C
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════════════
+//  `agent-turn` - jedna tura produkcyjnej pętli agenta, tryb bezpieczny (fala 2)
+// ═══════════════════════════════════════════════════════════════════════════════════════
+
+/**
+ * `host.agentManager` (`CliAgentManager`, wspólny dla wszystkich komend gotowości) nie niesie
+ * `getActiveSystemPromptWithMemory` w swoim typie - dodanie tej metody do `CliAgentManager`/
+ * `AGENT_MANAGER_METHODS` w `hostPlugin.ts` rozszerzyłoby bramkę `not_ready` TEŻ dla trzech
+ * pozostałych komend (zakaz zadania: nie ruszać ich poza liczeniem nazw). Zamiast tego: własna,
+ * WĄSKA walidacja NA GRANICY (ten sam wzorzec co `resolveAgentManager` w `hostPlugin.ts`) tuż
+ * przed użyciem - produkcyjny `AgentManager` ma tę metodę zawsze (rdzeń budowy promptu czatu),
+ * więc to czysto obronny check, nie nowy warunek gotowości reszty komend.
+ */
+function toAgentTurnAgentManager(am: CliAgentManager): AgentTurnAgentManager | null {
+    const candidate = am as unknown as Record<string, unknown>;
+    if (typeof candidate.getActiveSystemPromptWithMemory !== 'function') return null;
+    return am as unknown as AgentTurnAgentManager;
+}
+
+/**
+ * Blokada "jeden bieg naraz" - stan w ZAMKNIĘCIU `buildCliCommands` (jak `createInstanceTracker`),
+ * NIE w module: dwie instancje wtyczki-nosiciela (dwa `buildCliCommands` w testach) nie mają
+ * dzielić jednego zamka. Zwalniana w `finally` wołacza - po sukcesie, wyjątku I timeoucie.
+ */
+function createRunLock(): { tryAcquire: () => boolean; release: () => void } {
+    let running = false;
+    return {
+        tryAcquire: () => {
+            if (running) return false;
+            running = true;
+            return true;
+        },
+        release: () => { running = false; },
+    };
+}
+
+async function runAgentTurnCommand(
+    id: string,
+    params: CliData,
+    deps: CliDeps,
+    lock: ReturnType<typeof createRunLock>,
+): Promise<string> {
+    log.debug('CLI', `${id} params=${JSON.stringify(params)}`);
+    try {
+        const formatError = validateFormat(params);
+        if (formatError) return serializeCliResponse(errorResponse(id, formatError, `Unsupported format "${String(params.format)}" - only "json" is supported.`));
+
+        const agentFlag = parseAgentFlag(params);
+        if (!agentFlag.ok) return serializeCliResponse(errorResponse(id, agentFlag.code, agentFlag.message));
+
+        const promptFlag = parsePromptFlag(params);
+        if (!promptFlag.ok) return serializeCliResponse(errorResponse(id, promptFlag.code, promptFlag.message));
+
+        const toolsFlag = parseToolsFlag(params);
+        if (!toolsFlag.ok) return serializeCliResponse(errorResponse(id, toolsFlag.code, toolsFlag.message));
+
+        const maxIterationsFlag = parseAgentTurnIntegerFlag(params, 'max-iterations', { min: 1, max: 20, def: 8 });
+        if (!maxIterationsFlag.ok) return serializeCliResponse(errorResponse(id, maxIterationsFlag.code, maxIterationsFlag.message));
+
+        const timeoutFlag = parseAgentTurnIntegerFlag(params, 'timeout', { min: 10, max: 600, def: 180 });
+        if (!timeoutFlag.ok) return serializeCliResponse(errorResponse(id, timeoutFlag.code, timeoutFlag.message));
+
+        const host = deps.resolveHost();
+        if (!host || !host.isReady || !host.agentManager || !host.mcpClient || !host.toolRegistry) {
+            return serializeCliResponse(errorResponse(id, 'not_ready', 'Host plugin "pkm-assistant" is not installed, not ready yet, or is missing its agent manager, mcpClient, or toolRegistry.'));
+        }
+        const turnAgentManager = toAgentTurnAgentManager(host.agentManager);
+        if (!turnAgentManager) {
+            return serializeCliResponse(errorResponse(id, 'not_ready', 'Host plugin\'s agent manager does not support building a system prompt (getActiveSystemPromptWithMemory missing).'));
+        }
+
+        const names = host.agentManager.getAllAgents().map(a => a.name);
+        const resolved = resolveAgentName(names, agentFlag.value.value);
+        if (!resolved.ok) return serializeCliResponse(errorResponse(id, resolved.code, resolved.message));
+
+        const agent: Agent | undefined = host.agentManager.getAgent(resolved.name);
+        if (!agent) {
+            // Obronne: `resolveAgentName` już zwalidowało imię względem `getAllAgents()` - to
+            // gałąź na wypadek niespójności między dwiema metodami tego samego agent managera.
+            return serializeCliResponse(errorResponse(id, 'agent_not_found', `Agent "${resolved.name}" not found.`));
+        }
+
+        if (!lock.tryAcquire()) {
+            return serializeCliResponse(errorResponse(id, 'busy', 'Another agent-turn run is already in progress on this companion instance.'));
+        }
+        try {
+            const memory = host.agentManager.getAgentMemory(resolved.name);
+            const before = await snapshotBrain(memory);
+
+            const runtime = await deps.loadAgentTurnRuntime();
+            const turnDeps: AgentTurnDeps = {
+                runAgentLoop: runtime.runAgentLoop,
+                createStore: runtime.createStore,
+                createModel: runtime.createModel,
+                now: deps.now ? deps.now : () => new Date(),
+                setTimer: (cb, ms) => setTimeout(cb, ms * (deps.agentTurnTimeoutScale ?? 1)),
+                clearTimer: handle => clearTimeout(handle as ReturnType<typeof setTimeout>),
+            };
+
+            const outcome = await runAgentTurn(
+                { agentManager: turnAgentManager, mcpClient: host.mcpClient, toolRegistry: host.toolRegistry, raw: host.raw },
+                agent,
+                { prompt: promptFlag.value, tools: toolsFlag.value, maxIterations: maxIterationsFlag.value, timeoutSeconds: timeoutFlag.value },
+                turnDeps,
+            );
+
+            const after = await snapshotBrain(memory);
+            const verdict = brainStatVerdict(before, after);
+
+            if (!outcome.ok) return serializeCliResponse(errorResponse(id, outcome.code, outcome.message, verdict.effect, verdict.verified));
+            return serializeCliResponse(okResponse(id, outcome.data, verdict.effect, verdict.verified));
+        } finally {
+            lock.release();
+        }
+    } catch (e) {
+        // K-adwersarialna/D: maskowanie TYLKO tutaj (i w `turn_failed` własnym `agentTurn.ts`) -
+        // `errorMessage`/`runGuardedAlways`/`runGuardedReady` (reszta komend) zostają nietknięte,
+        // zakaz zadania mówi nie ruszać ich poza liczeniem nazw.
+        return serializeCliResponse(errorResponse(id, 'internal', maskSensitiveData(errorMessage(e)), 'unknown'));
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════════════
 //  Montaż
 // ═══════════════════════════════════════════════════════════════════════════════════════
 
 /** Kolejność MUSI się zgadzać z kolejnością komend budowanych niżej - `commands` w `StatusData` ją zwraca. */
-const COMMAND_NAMES = ['status', 'selftest', 'agent-prompt', 'memory-status'] as const;
+const COMMAND_NAMES = ['status', 'selftest', 'agent-prompt', 'memory-status', 'agent-turn'] as const;
 
 /**
  * Buduje cztery `CliCommandSpec` - czyste, zero Obsidiana (żaden argument, żadne pole tego
@@ -497,8 +651,9 @@ const COMMAND_NAMES = ['status', 'selftest', 'agent-prompt', 'memory-status'] as
  */
 export function buildCliCommands(deps: CliDeps): CliCommandSpec[] {
     const ids = COMMAND_NAMES.map(name => `${deps.companionId}:${name}`);
-    const [statusId, selftestId, agentPromptId, memoryStatusId] = ids;
+    const [statusId, selftestId, agentPromptId, memoryStatusId, agentTurnId] = ids;
     const trackInstance = createInstanceTracker(deps.now ? deps.now : () => new Date());
+    const agentTurnLock = createRunLock();
 
     return [
         {
@@ -531,6 +686,19 @@ export function buildCliCommands(deps: CliDeps): CliCommandSpec[] {
                 format: FORMAT_FLAG,
             },
             run: params => runGuardedReady(memoryStatusId, params, deps, host => runMemoryStatus(memoryStatusId, params, deps, host.agentManager)),
+        },
+        {
+            id: agentTurnId,
+            description: AGENT_TURN_DESCRIPTION,
+            flags: {
+                agent: { value: '<name>', description: 'Exact or case-insensitive agent name.', required: true },
+                prompt: { value: '<text>', description: 'The user message to send to the agent for this turn.', required: true },
+                tools: { value: 'readonly|none', description: 'Tool whitelist for this turn. "readonly" (default) offers read/list/search only; "none" offers no tools.' },
+                'max-iterations': { value: '<n>', description: 'Override the loop iteration limit (integer 1-20, default 8).' },
+                timeout: { value: '<seconds>', description: 'Wall-clock budget for the whole turn in seconds (integer 10-600, default 180).' },
+                format: FORMAT_FLAG,
+            },
+            run: params => runAgentTurnCommand(agentTurnId, params, deps, agentTurnLock),
         },
     ];
 }

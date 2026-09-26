@@ -15,6 +15,8 @@
  * z tym zrobić (`status` czyta co jest, reszta komend odmawia `not_ready`).
  */
 import type { AgentManager } from '@plugin/modules/agents/index.js';
+import type { MCPClient } from '@plugin/modules/tools/MCPClient.js';
+import type { ToolRegistry } from '@plugin/modules/tools/ToolRegistry.js';
 
 /** Id manifestu hosta, którego szuka ta wtyczka-nosiciel. */
 const HOST_PLUGIN_ID = 'pkm-assistant';
@@ -28,6 +30,12 @@ export type CliAgentManager = Pick<
     AgentManager,
     'getAllAgents' | 'getAgent' | 'getActiveAgent' | 'getPromptInspectorDataForAgent' | 'getAgentMemory'
 >;
+
+/** Wąski wycinek `MCPClient`, na którym stoi `agent-turn` (egzekucja narzędzi tury). */
+export type CliMcpClient = Pick<MCPClient, 'executeToolCall'>;
+
+/** Wąski wycinek `ToolRegistry`, na którym stoi `agent-turn` (whitelista narzędzi tury). */
+export type CliToolRegistry = Pick<ToolRegistry, 'filterByAgent' | 'getToolDefinitions'>;
 
 /** Status jednego wpisu indeksu wektorowego, tak jak go widzi CLI (bez importu z `modules/embedding/`). */
 export interface CliIndexStatus {
@@ -50,6 +58,12 @@ export interface ResolvedHost {
     isReady: boolean;
     agentManager: CliAgentManager | undefined;
     indexStatus: CliIndexStatus | undefined;
+    /** K-agent-turn: klient MCP hosta, zwalidowany na granicy (`executeToolCall` jest funkcją).
+     *  Brak = `agent-turn` odmawia `not_ready`; pozostałe trzy komendy gotowości go nie czytają. */
+    mcpClient: CliMcpClient | undefined;
+    /** K-agent-turn: rejestr narzędzi hosta, zwalidowany na granicy (`filterByAgent`/
+     *  `getToolDefinitions` są funkcjami). Brak = `agent-turn` odmawia `not_ready`. */
+    toolRegistry: CliToolRegistry | undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -98,6 +112,21 @@ function resolveManifest(raw: Record<string, unknown>): { id: string; version: s
 
 function resolveIsReady(raw: Record<string, unknown>): boolean {
     return typeof raw._ready === 'boolean' ? raw._ready : false;
+}
+
+/** `raw.mcpClient` zwalidowany na granicy: obiekt z `executeToolCall` jako funkcją. */
+function resolveMcpClient(raw: Record<string, unknown>): CliMcpClient | undefined {
+    const candidate = raw.mcpClient;
+    if (!isRecord(candidate) || typeof candidate.executeToolCall !== 'function') return undefined;
+    return candidate as unknown as CliMcpClient;
+}
+
+/** `raw.toolRegistry` zwalidowany na granicy: obiekt z `filterByAgent`/`getToolDefinitions` jako funkcje. */
+function resolveToolRegistry(raw: Record<string, unknown>): CliToolRegistry | undefined {
+    const candidate = raw.toolRegistry;
+    if (!isRecord(candidate)) return undefined;
+    if (typeof candidate.filterByAgent !== 'function' || typeof candidate.getToolDefinitions !== 'function') return undefined;
+    return candidate as unknown as CliToolRegistry;
 }
 
 /**
@@ -151,5 +180,7 @@ export function resolveHost(app: unknown): ResolvedHost | null {
         isReady: resolveIsReady(raw),
         agentManager: resolveAgentManager(raw),
         indexStatus: resolveIndexStatus(raw),
+        mcpClient: resolveMcpClient(raw),
+        toolRegistry: resolveToolRegistry(raw),
     };
 }
