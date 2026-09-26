@@ -1,7 +1,7 @@
 import json, tempfile, threading, time, unittest
 from http.client import HTTPConnection
 from http.server import ThreadingHTTPServer
-from monitor import Service, _handler
+from monitor import Service, _handler, enabled_providers
 from test_core import account, T
 
 class ServiceTests(unittest.TestCase):
@@ -61,3 +61,6 @@ class ServiceTests(unittest.TestCase):
    # refresh publishes its result just before starting the notifier worker.
    while service.delivery_thread and service.delivery_thread.ident is None: time.sleep(.001)
    service.stop();service.core.close()
+ def test_enabled_provider_validation_rejects_bad_shapes(self):
+  for value in ([],['codex','codex'],['unsupported'],[None],True):
+   with self.assertRaises(ValueError):enabled_providers({'enabledProviders':value})

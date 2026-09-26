@@ -51,7 +51,7 @@ def install(vault, destination, codex, claude=None, pythonw=None, providers=None
     if dest == vault or vault in dest.parents or dest in vault.parents or dest == src or src in dest.parents or dest in src.parents:
         raise ValueError('Private runtime must stay outside vault and source repository')
     if not (vault/'.obsidian/plugins/most-status/manifest.json').is_file():raise ValueError('Expected existing Most Status vault')
-    required=['monitor.py','core.py','collectors.py','notifier.py','zoneinfo/Europe/Berlin',
+    required=['monitor.py','core.py','collectors.py','codex_resolver.py','notifier.py','zoneinfo/Europe/Berlin',
         'build/main.js','ui/styles.css','ui/manifest.json','ui/monitor_core.js','home/pulpit_core.js','home/pulpit_kafle.js','home/baseline-hashes.json']
     if any(not (src/name).is_file() for name in required):raise ValueError('Deployment sources incomplete')
     for exe in (codex,pythonw):
@@ -83,7 +83,7 @@ def install(vault, destination, codex, claude=None, pythonw=None, providers=None
             old=backup/label;old.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(target,old)
         shutil.copy2(source,target)
         manifest.append({'path':str(target),'sha256':hashlib.sha256(target.read_bytes()).hexdigest()})
-    for name in ('monitor.py','core.py','collectors.py','notifier.py'):
+    for name in ('monitor.py','core.py','collectors.py','codex_resolver.py','notifier.py'):
         copy(src/name,dest/name,'runtime/'+name)
     for zone in (src/'zoneinfo').rglob('*'):
         if zone.is_file():copy(zone,dest/'zoneinfo'/zone.relative_to(src/'zoneinfo'),'runtime/zoneinfo/'+str(zone.relative_to(src/'zoneinfo')))

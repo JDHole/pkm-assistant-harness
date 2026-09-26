@@ -12,10 +12,7 @@ import tempfile
 import threading
 import time
 from datetime import datetime
-try:
-    import tomllib
-except ImportError:  # pragma: no cover - Python 3.10 compatibility
-    tomllib = None
+from codex_resolver import CodexBinaryMissing, resolve_codex_path
 
 VERSION = '1.0.0'
 FLAGS = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
@@ -143,71 +140,11 @@ def collect_codex(config):
     finally:
         if rpc:rpc.close()
 
-def _valid_codex_executable(value):
-    """Return an explicit local executable path, without consulting PATH."""
-    if not isinstance(value, str) or not value.strip(): return None
-    candidate=Path(os.path.expandvars(os.path.expanduser(value.strip())))
-    try:
-        if not candidate.is_absolute() or not candidate.is_file(): return None
-        # Codex is distributed as a native Windows executable on this host.
-        if os.name == 'nt' and candidate.suffix.lower() != '.exe': return None
-        return candidate.resolve()
-    except (OSError, RuntimeError):
-        return None
-
-def _read_codex_cli_path(path):
-    """Read only the executable assignment, never parse other config values."""
-    if not tomllib: return None
-    section=''
-    try:
-        for line in Path(path).read_text(encoding='utf-8').splitlines():
-            stripped=line.strip()
-            if not stripped or stripped.startswith('#'): continue
-            match=re.fullmatch(r'\[([^]]+)\]\s*(?:#.*)?',stripped)
-            if match:
-                section=match.group(1).strip();continue
-            if section not in ('', 'mcp_servers.node_repl.env'): continue
-            match=re.match(r'^\s*CODEX_CLI_PATH\s*=\s*(.*?)\s*(?:#.*)?$',line)
-            if match:
-                try:return tomllib.loads('CODEX_CLI_PATH = '+match.group(1)).get('CODEX_CLI_PATH')
-                except (ValueError,TypeError):return None
-    except (OSError, UnicodeError):
-        return None
-    return None
-
 def resolve_codex_executable(config, config_path=None):
-    """Resolve the current Codex app binary at each collection, without reading auth data.
-
-    Precedence is explicit process setting, the single CODEX_CLI_PATH setting
-    in ~/.codex/config.toml, the locally pinned config value, then the newest
-    executable in the official per-version app directory. PATH is never used.
-    """
-    candidates=[]
-    candidates.append(os.environ.get('CODEX_CLI_PATH'))
-    if config_path is None:
-        config_path=Path.home()/'.codex'/'config.toml'
-    else:
-        config_path=Path(config_path)
     try:
-        if config_path.is_file() and tomllib:
-            cli_path=_read_codex_cli_path(config_path)
-            candidates.append(cli_path)
-    except (OSError, ValueError, TypeError):
-        pass
-    candidates.append(config.get('codexPath'))
-    for value in candidates:
-        valid=_valid_codex_executable(value)
-        if valid: return valid
-
-    # Last-resort recovery for app updates that rotate the versioned directory.
-    # This location is the official user-local Codex app install, not a PATH lookup.
-    app_dir=Path.home()/'AppData'/'Local'/'OpenAI'/'Codex'/'bin'
-    try:
-        matches=[p for p in app_dir.glob('*/codex.exe') if p.is_file()]
-        if matches: return max(matches,key=lambda p:p.stat().st_mtime).resolve()
-    except OSError:
-        pass
-    raise CollectionError('codex_executable_unavailable')
+        return resolve_codex_path(config_path=config_path, explicit_path=config.get('codexPath'))
+    except CodexBinaryMissing as exc:
+        raise CollectionError('codex_executable_unavailable') from exc
 
 def _run(args, config, deadline):
     left=deadline-time.monotonic()

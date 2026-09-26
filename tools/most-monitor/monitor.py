@@ -8,10 +8,18 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 from core import MonitorCore
 
+PROVIDERS=('codex','claude')
+
+def enabled_providers(config):
+    value=config.get('enabledProviders',list(PROVIDERS))
+    if not isinstance(value,list) or not value or any(not isinstance(x,str) or x not in PROVIDERS for x in value) or len(set(value)) != len(value):
+        raise ValueError('enabledProviders must be a non-empty list of supported providers')
+    return tuple(value)
+
 class Service:
     def __init__(self, config, collectors=None, notifier=None):
         self.config = config
-        self.enabled_providers = tuple(config.get('enabledProviders', ('codex', 'claude')))
+        self.enabled_providers = enabled_providers(config)
         if notifier is None and config.get("notifications", True):
             try:
                 import notifier as notifier_module
@@ -39,7 +47,7 @@ class Service:
     def refresh(self, max_age=0):
         with self.guard:
             if self.refreshing: future = self.refreshing
-            elif time.time() - self.last_refresh < 5: return self.core.snapshot()
+            elif time.time() - self.last_refresh < 5: return self._visible_snapshot(self.core.snapshot())
             else:
                 future = concurrent.futures.Future(); self.refreshing = future
                 threading.Thread(target=self._refresh, args=(future,max_age), daemon=True).start()
@@ -48,14 +56,14 @@ class Service:
         try:
             if self.collectors is None:
                 import collectors as c
-                collector_map = {'codex': lambda: c.collect_codex(self.config), 'claude': lambda: c.collect_claude(self.config)}
+                funcs = {'codex': lambda: c.collect_codex(self.config), 'claude': lambda: c.collect_claude(self.config)}
             elif isinstance(self.collectors, dict):
-                collector_map = dict(self.collectors)
+                funcs = self.collectors
             else:
                 # Preserve the original positional injection contract: slot 0
                 # is Codex and slot 1 is Claude, even for provider subsets.
-                collector_map = {provider: fn for provider, fn in zip(('codex', 'claude'), self.collectors)}
-            collector_map = {p: collector_map[p] for p in self.enabled_providers if p in collector_map}
+                funcs = dict(zip(PROVIDERS, self.collectors))
+            collector_map = {provider: fn for provider, fn in funcs.items() if provider in self.enabled_providers}
             # Collector subprocess deadlines provide the hard stop; provider failures are isolated.
             def collect(provider, fn):
                 cached = self.account_cache.get(provider)
@@ -75,10 +83,10 @@ class Service:
                     delay = min(3600, max(60, old_delay * 2))
                     account['retrySeconds'] = delay; self.cooldown[provider] = time.time() + delay; self.account_cache[provider] = account
                 return account
-            with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, len(collector_map))) as ex:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, min(2, len(collector_map)))) as ex:
                 futures = [ex.submit(collect, provider, fn) for provider, fn in collector_map.items()]
                 accounts = [f.result(timeout=40) for f in futures]
-            result=self.core.ingest(accounts); self.last_refresh=time.time(); self.failures=0; future.set_result(result)
+            result=self.core.ingest(accounts); self.last_refresh=time.time(); self.failures=0; future.set_result(self._visible_snapshot(result))
             if not self.delivery_thread or not self.delivery_thread.is_alive():
                 self.delivery_thread = threading.Thread(target=self.core.deliver_pending, daemon=True); self.delivery_thread.start()
         except Exception as exc:
@@ -86,22 +94,29 @@ class Service:
         finally:
             with self.guard: self.refreshing=None
     def usage(self, max_age=300, **filters):
-        max_age=max(0, min(int(max_age), 3600)); s=self.core.snapshot(**filters)
+        max_age=max(0, min(int(max_age), 3600)); s=self._visible_snapshot(self.core.snapshot(**filters))
         now = time.time()
         needs = s is None or not s['accounts'] or any(a.get('status') != 'fresh' or now - (a.get('observedAt') or 0) > max_age for a in s['accounts'])
         if needs and (s is None or now-self.last_refresh >= 5): self.refresh(max_age)
-        s = self.core.snapshot(**filters)
+        s = self._visible_snapshot(self.core.snapshot(**filters))
         if s:
             s['maxAgeSatisfied'] = bool(s['accounts']) and all(a.get('status') == 'fresh' and time.time()-(a.get('observedAt') or 0) <= max_age for a in s['accounts'])
         return s
 
+    def _visible_snapshot(self,snapshot):
+        if snapshot is None:return None
+        snapshot['accounts']=[a for a in snapshot.get('accounts',[]) if isinstance(a,dict) and a.get('provider') in self.enabled_providers]
+        snapshot['alerts']=[a for a in snapshot.get('alerts',[]) if isinstance(a,dict) and a.get('provider') in self.enabled_providers]
+        states=[a.get('status') for a in snapshot['accounts']]
+        snapshot['status']='fresh' if states and all(x=='fresh' for x in states) else 'partial' if 'fresh' in states else 'stale' if 'stale' in states else 'error'
+        snapshot['validUntil']=min((a.get('validUntil') for a in snapshot['accounts'] if isinstance(a.get('validUntil'),(int,float))),default=None)
+        return snapshot
+
 def load_config(path=None):
     path=Path(path or Path(__file__).with_name("config.json")); data=json.loads(path.read_text(encoding="utf-8"))
     data.setdefault("port",1236); data.setdefault("pollSeconds",300); data.setdefault("notifications",True)
-    data.setdefault('enabledProviders',['codex','claude'])
-    enabled=data['enabledProviders']
-    if not isinstance(enabled,list) or not enabled or any(p not in ('codex','claude') for p in enabled) or len(set(enabled)) != len(enabled):
-        raise ValueError('enabledProviders must contain unique provider names: codex, claude')
+    data.setdefault('enabledProviders',list(PROVIDERS))
+    enabled_providers(data)
     if not data.get("dataDir"): raise ValueError("dataDir is required")
     return data
 

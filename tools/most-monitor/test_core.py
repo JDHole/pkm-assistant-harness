@@ -95,3 +95,10 @@ class CoreTests(unittest.TestCase):
         exported=json.loads((Path(self.d.name)/'most-snapshot.json').read_text())
         self.assertEqual([],exported['accounts']);self.assertEqual([],exported['alerts'])
         self.assertEqual([],self.c._load_raw()['accounts']);self.assertEqual([],self.c._load_raw()['alerts'])
+    def test_disabled_alert_retirement_persists_without_snapshot_and_bad_payload_is_ignored(self):
+        self.c.db.execute("INSERT INTO alerts VALUES(?,?,?,?,?)",('bad','bad','{broken',T,0));self.c.db.commit()
+        self.c.close();self.c=MonitorCore(self.d.name,host_id='h',enabled_providers=['codex'])
+        self.assertEqual(-4,self.c.db.execute("SELECT delivered FROM alerts WHERE id='bad'").fetchone()[0])
+        self.assertEqual([],self.c._recent_alerts())
+    def test_invalid_enabled_providers_are_rejected(self):
+        with self.assertRaises(ValueError):MonitorCore(self.d.name,enabled_providers=['codex','codex'])

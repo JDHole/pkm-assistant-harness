@@ -7,7 +7,7 @@ class InstallTests(unittest.TestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.root=Path(self.tmp.name)
         self.src=self.root/'source';self.vault=self.root/'vault';self.dest=self.root/'private runtime'
-        for n in ['monitor.py','core.py','collectors.py','notifier.py','zoneinfo/Europe/Berlin','build/main.js','ui/styles.css','ui/manifest.json','ui/monitor_core.js','home/pulpit_core.js','home/pulpit_kafle.js','home/widgetHome.js']:
+        for n in ['monitor.py','core.py','collectors.py','codex_resolver.py','notifier.py','zoneinfo/Europe/Berlin','build/main.js','ui/styles.css','ui/manifest.json','ui/monitor_core.js','home/pulpit_core.js','home/pulpit_kafle.js','home/widgetHome.js']:
             p=self.src/n;p.parent.mkdir(parents=True,exist_ok=True);p.write_text('new',encoding='utf-8')
         self.manifest=self.vault/'.obsidian/plugins/most-status/manifest.json';self.manifest.parent.mkdir(parents=True);self.manifest.write_text('old')
         self.home=self.vault/'99_System/Scripts/views/widgetHome.js'
@@ -51,6 +51,7 @@ class InstallTests(unittest.TestCase):
         backup=list((self.vault/'90_Archiwum').glob('monitor-deploy-*'))[0]
         self.assertEqual('old',(backup/'plugin/manifest.json').read_text())
         self.assertTrue((self.dest/'zoneinfo/Europe/Berlin').exists())
+        self.assertTrue((self.dest/'codex_resolver.py').exists())
         vbs=(self.dest/'Start-Most-Monitor.vbs').read_text()
         self.assertIn('""'+str(self.exe)+'""',vbs);self.assertIn(', 0, False',vbs)
         salt=json.loads((self.dest/'config.json').read_text())['identitySalt']
