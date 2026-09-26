@@ -17,13 +17,18 @@
  *  (nie dało się zmierzyć albo wyjątek padł w połowie drogi). */
 export type CliEffect = 'unchanged' | 'changed' | 'created' | 'unknown';
 
-/** Kody błędów wszystkich czterech komend fali 1 - jedna wspólna pula, nie po jednej na komendę. */
+/** Kody błędów wszystkich pięciu komend - jedna wspólna pula, nie po jednej na komendę.
+ *  `busy`/`model_unavailable`/`turn_failed` są WYŁĄCZNIE `agent-turn` (fala 2, produkcyjna
+ *  pętla) - patrz `agentTurn.ts` i tabela komend w `companion/CLAUDE.md`. */
 export type CliErrorCode =
     | 'not_ready'
     | 'bad_flag'
     | 'agent_not_found'
     | 'agent_ambiguous'
     | 'section_not_found'
+    | 'busy'
+    | 'model_unavailable'
+    | 'turn_failed'
     | 'internal';
 
 /**

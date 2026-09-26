@@ -142,6 +142,58 @@ test('vaultIndexer bez getStatus jako funkcji -> indexStatus undefined', t => {
     t.is(host?.indexStatus, undefined);
 });
 
+// ── mcpClient (K-agent-turn) ────────────────────────────────────────────────────────────
+
+test('host bez pola mcpClient -> mcpClient undefined', t => {
+    const host = resolveHost(makeApp({ 'pkm-assistant': {} }));
+    t.is(host?.mcpClient, undefined);
+});
+
+test('mcpClient z executeToolCall jako funkcja -> zwrócony (ta sama referencja)', t => {
+    const mcpClient = { executeToolCall: async () => ({}) };
+    const host = resolveHost(makeApp({ 'pkm-assistant': { mcpClient } }));
+    t.is(host?.mcpClient, mcpClient);
+});
+
+test('mcpClient.executeToolCall NIE jest funkcją (np. string) -> mcpClient undefined', t => {
+    const host = resolveHost(makeApp({ 'pkm-assistant': { mcpClient: { executeToolCall: 'nope' } } }));
+    t.is(host?.mcpClient, undefined);
+});
+
+test('mcpClient nie-obiekt (null) -> mcpClient undefined', t => {
+    const host = resolveHost(makeApp({ 'pkm-assistant': { mcpClient: null } }));
+    t.is(host?.mcpClient, undefined);
+});
+
+// ── toolRegistry (K-agent-turn) ─────────────────────────────────────────────────────────
+
+const FULL_TOOL_REGISTRY = {
+    filterByAgent: () => [],
+    getToolDefinitions: () => [],
+};
+
+test('host bez pola toolRegistry -> toolRegistry undefined', t => {
+    const host = resolveHost(makeApp({ 'pkm-assistant': {} }));
+    t.is(host?.toolRegistry, undefined);
+});
+
+test('toolRegistry z KOMPLETEM dwóch metod-funkcji -> zwrócony (ta sama referencja)', t => {
+    const host = resolveHost(makeApp({ 'pkm-assistant': { toolRegistry: FULL_TOOL_REGISTRY } }));
+    t.is(host?.toolRegistry, FULL_TOOL_REGISTRY);
+});
+
+test('toolRegistry z BRAKUJĄCĄ jedną metodą -> undefined (fail-closed, nie połowiczny obiekt)', t => {
+    const { getToolDefinitions: _drop, ...incomplete } = FULL_TOOL_REGISTRY;
+    void _drop;
+    const host = resolveHost(makeApp({ 'pkm-assistant': { toolRegistry: incomplete } }));
+    t.is(host?.toolRegistry, undefined);
+});
+
+test('toolRegistry nie-obiekt (null) -> undefined', t => {
+    const host = resolveHost(makeApp({ 'pkm-assistant': { toolRegistry: null } }));
+    t.is(host?.toolRegistry, undefined);
+});
+
 // ── raw ─────────────────────────────────────────────────────────────────────────────────
 
 test('host.raw jest DOKŁADNIE tym samym obiektem referencyjnie (identity, nie kopia)', t => {
