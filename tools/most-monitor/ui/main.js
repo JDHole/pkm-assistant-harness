@@ -478,7 +478,7 @@ class MostStatusPlugin extends Plugin {
             .setIcon('leaf')
             .setDisabled(!this.status)
             .onClick(() => void this.post(ECO, { on: !eco }, eco ? 'Tryb oszczędny wyłączony' : 'Tryb oszczędny włączony')));
-        menu.addItem((item) => item.setTitle('Restart mostu (ChatMock)').setIcon('rotate-ccw').onClick(() => void this.post(RESTART, {}, 'Restart ChatMocka zlecony')));
+        menu.addItem((item) => item.setTitle('Restart mostu i monitora').setIcon('rotate-ccw').onClick(() => void this.post(RESTART, {}, 'Restart mostu i monitora')));
         menu.showAtMouseEvent(event);
     }
 
@@ -491,8 +491,11 @@ class MostStatusPlugin extends Plugin {
                 body: JSON.stringify(body),
                 throw: false
             });
-            if (response.status >= 400) throw Error(`HTTP ${response.status}`);
-            if (!this.unloaded) new Notice(message);
+            const result = response.json || {};
+            const serviceStatus = (key, name) => `${name}: ${result[key] && result[key].ok ? 'OK' : `błąd (${result[key] && result[key].error || 'niepotwierdzony'})`}`;
+            const restartDetails = `${serviceStatus('monitor', 'Most Monitor')}; ${serviceStatus('backend', 'ChatMock')}`;
+            if (response.status >= 400) throw Error(url === RESTART ? restartDetails : `HTTP ${response.status}`);
+            if (!this.unloaded) new Notice(url === RESTART ? `Restart mostu i monitora: ${restartDetails}` : message);
         } catch (error) {
             if (!this.unloaded) new Notice(`Most: błąd - ${error.message || error}`);
         }

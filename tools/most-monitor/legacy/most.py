@@ -66,6 +66,11 @@ LISTEN_HOST = "127.0.0.1"
 LISTEN_PORT = _env_int("MOST_LISTEN_PORT", 1234)
 BACKEND_PORT = _env_int("MOST_BACKEND_PORT", 1235)
 BACKEND_URL = f"http://127.0.0.1:{BACKEND_PORT}"
+MONITOR_PORT = _env_int("MOST_MONITOR_PORT", 1236)
+MONITOR_URL = f"http://127.0.0.1:{MONITOR_PORT}"
+MONITOR_RESTART_TIMEOUT = 12.0
+MONITOR_DRAIN_TIMEOUT = 80.0
+MONITOR_REQUEST_TIMEOUT = 5.0
 
 MAX_CONCURRENT = _env_int("MOST_MAX_CONCURRENT", 6)      # slotow do backendu naraz
 QUEUE_MAX_DEPTH = _env_int("MOST_QUEUE_MAX_DEPTH", 16)   # czekajacych; powyzej -> 429 od reki
@@ -259,6 +264,151 @@ class Supervisor:
             return ok
 
 SUP = Supervisor()
+
+# Manual restart serializes both front doors so tray and HTTP clicks share one
+# bounded monitor lifecycle operation. Automatic supervisor restarts stay separate.
+MANUAL_RESTART_LOCK = asyncio.Lock()
+
+
+async def _monitor_request(path: str, method: str = "GET") -> tuple[int | None, dict, str | None]:
+    try:
+        timeout = aiohttp.ClientTimeout(total=MONITOR_REQUEST_TIMEOUT)
+        async with aiohttp.ClientSession(timeout=timeout) as client:
+            async with client.request(method, f"{MONITOR_URL}{path}",
+                                      headers={"X-Most-Client": "local-v1"}) as response:
+                try:
+                    body = await response.json(content_type=None)
+                except (ValueError, aiohttp.ClientError):
+                    body = {}
+                return response.status, body if isinstance(body, dict) else {}, None
+    except aiohttp.ClientConnectorError as error:
+        os_error = getattr(error, "os_error", None)
+        if getattr(os_error, "winerror", None) in (10061, 1225) or getattr(os_error, "errno", None) in (61, 111, 10061):
+            return None, {}, "connection_refused"
+        return None, {}, "connection_error"
+    except asyncio.TimeoutError:
+        return None, {}, "timeout"
+    except aiohttp.ClientError:
+        return None, {}, "connection_error"
+
+
+async def _monitor_health() -> tuple[bool, str | None]:
+    status, body, error = await _monitor_request("/most/v1/health")
+    if error:
+        return False, error
+    if status == 200 and body.get("service") == "most-monitor" and body.get("ok") is True:
+        return True, None
+    if status is not None and status >= 500:
+        return False, f"http_{status}"
+    return False, "wrong_service"
+
+
+async def _shutdown_monitor() -> tuple[bool, str | None]:
+    status, body, error = await _monitor_request("/most/v1/shutdown", "POST")
+    if error:
+        return False, error
+    if status == 202 and body.get("service") == "most-monitor" and body.get("ok") is True:
+        return True, None
+    return False, f"http_{status}" if status is not None else "shutdown_failed"
+
+
+async def _wait_monitor_closed() -> tuple[bool, str | None]:
+    deadline = now() + MONITOR_DRAIN_TIMEOUT
+    while now() < deadline:
+        healthy, error = await _monitor_health()
+        if not healthy:
+            if error == "connection_refused":
+                return True, None
+            if error not in ("timeout", "connection_error"):
+                return False, error or "health_failed"
+        await asyncio.sleep(0.2)
+    return False, "shutdown_timeout"
+
+
+async def _launch_monitor() -> tuple[bool, str | None]:
+    monitor_dir = BASE_DIR / "most-monitor"
+    script = monitor_dir / "monitor.py"
+    config = monitor_dir / "config.json"
+    if not script.is_file() or not config.is_file():
+        return False, "monitor_install_missing"
+    pythonw = Path(sys.executable).with_name("pythonw.exe")
+    if not pythonw.is_file():
+        local_app_data = Path(os.getenv("LOCALAPPDATA", ""))
+        candidate = local_app_data / "Programs" / "Python" / "Python312" / "pythonw.exe"
+        pythonw = candidate if candidate.is_file() else Path()
+    if not pythonw.is_file():
+        return False, "pythonw_unavailable"
+    flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    try:
+        subprocess.Popen([str(pythonw), str(script), "--config", str(config), "serve"],
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, close_fds=True, creationflags=flags,
+                         cwd=str(monitor_dir))
+        return True, None
+    except OSError as error:
+        log.error("Nie udalo sie uruchomic Most Monitor: %s", error.__class__.__name__)
+        return False, "spawn_failed"
+
+
+async def _verify_monitor() -> tuple[bool, str | None]:
+    deadline = now() + MONITOR_RESTART_TIMEOUT
+    last_error = "connection_refused"
+    while now() < deadline:
+        healthy, error = await _monitor_health()
+        if healthy:
+            return True, None
+        if error != "connection_refused":
+            return False, error or "health_failed"
+        last_error = error
+        await asyncio.sleep(0.25)
+    return False, "health_timeout" if last_error == "connection_refused" else last_error
+
+
+async def manual_restart(reason: str) -> dict:
+    async with MANUAL_RESTART_LOCK:
+        monitor = {"ok": False, "error": None}
+        try:
+            healthy, health_error = await _monitor_health()
+            if healthy:
+                stopped, stop_error = await _shutdown_monitor()
+                if not stopped:
+                    monitor["error"] = stop_error or "shutdown_failed"
+                else:
+                    closed, close_error = await _wait_monitor_closed()
+                    if not closed:
+                        monitor["error"] = close_error or "shutdown_failed"
+            elif health_error == "connection_refused":
+                # A refused loopback connection is the only signal that permits a direct start.
+                pass
+            else:
+                monitor["error"] = health_error or "health_failed"
+
+            if monitor["error"] is None:
+                launched, launch_error = await _launch_monitor()
+                if not launched:
+                    monitor["error"] = launch_error or "spawn_failed"
+                else:
+                    ready, ready_error = await _verify_monitor()
+                    if ready:
+                        monitor["ok"] = True
+                    else:
+                        monitor["error"] = ready_error or "health_failed"
+        except Exception as error:
+            log.exception("Blad restartu Most Monitor")
+            monitor["error"] = f"monitor_restart_{error.__class__.__name__}"
+
+        backend = {"ok": False}
+        try:
+            backend["ok"] = bool(await SUP.restart(reason, manual=True))
+            if not backend["ok"]:
+                backend["error"] = "backend_restart_failed"
+        except Exception as error:
+            log.exception("Blad restartu ChatMocka")
+            backend["error"] = f"backend_restart_{error.__class__.__name__}"
+        result = {"ok": monitor["ok"] and backend["ok"],
+                  "monitor": monitor, "backend": backend}
+        log.info("restart reczny: monitor=%s backend=%s", monitor["ok"], backend["ok"])
+        return result
 
 # ------------------------------------------------------------------ odczyt limitu
 
@@ -582,8 +732,9 @@ async def handle_status(request: web.Request) -> web.Response:
 
 
 async def handle_restart(request: web.Request) -> web.Response:
-    ok = await SUP.restart("guzik / endpoint /most/restart", manual=True)
-    return web.json_response({"ok": ok, "state": STATE.backend_state}, status=200 if ok else 503)
+    result = await manual_restart("guzik / endpoint /most/restart")
+    result["state"] = STATE.backend_state
+    return web.json_response(result, status=200 if result["ok"] else 503)
 
 
 _TRANSIENT_STATUSES = {429, 500, 502, 503, 504}
@@ -974,7 +1125,12 @@ def _tray_body(loop: asyncio.AbstractEventLoop, stop_event: asyncio.Event) -> No
         run_async(_do())
 
     def on_restart(icon, item) -> None:
-        run_async(SUP.restart("guzik w tray", manual=True))
+        async def _do():
+            result = await manual_restart("guzik w tray")
+            log.info("Restart mostu i monitora: Most Monitor %s, ChatMock %s",
+                     "OK" if result["monitor"]["ok"] else f"BLAD ({result['monitor'].get('error')})",
+                     "OK" if result["backend"]["ok"] else f"BLAD ({result['backend'].get('error')})")
+        run_async(_do())
 
     def on_logs(icon, item) -> None:
         os.startfile(str(MOST_DIR))
@@ -1008,7 +1164,7 @@ def _tray_body(loop: asyncio.AbstractEventLoop, stop_event: asyncio.Event) -> No
         pystray.MenuItem(status_label, None, enabled=False),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("Odswiez limity (Most Monitor)", on_refresh),
-        pystray.MenuItem("Restart mostu", on_restart),
+        pystray.MenuItem("Restart mostu i monitora", on_restart),
         pystray.MenuItem("Otworz logi", on_logs),
         pystray.MenuItem("Autostart z Windows", on_autostart, checked=lambda item: autostart_on()),
         pystray.MenuItem("Tryb oszczedny (Astra -> Sol xhigh)", on_eco, checked=lambda item: eco_mode_on()),

@@ -29,9 +29,8 @@ class Service:
         self.core = MonitorCore(config["dataDir"], host_id=config.get('hostId'), notifier=notifier, snapshot_path=config.get('snapshotPath'), enabled_providers=self.enabled_providers)
         self.collectors = collectors; self.last_refresh = 0.; self.refreshing = None; self.guard = threading.Lock(); self.failures = 0
         self.cooldown = {}; self.account_cache = {}; self.attempted = {}; self.delivery_thread = None
-        self.stop_event = threading.Event(); self.poll_thread = None
+        self.stop_event = threading.Event(); self.poll_thread = None; self.refresh_thread = None; self.stopping = False
     def start_polling(self):
-        if self.poll_thread: return
         def loop():
             while not self.stop_event.is_set():
                 try: self.refresh()
@@ -39,18 +38,44 @@ class Service:
                 base = max(60, int(self.config.get("pollSeconds", 300)))
                 delay = base * random.uniform(.9, 1.0)
                 self.stop_event.wait(delay)
-        self.poll_thread = threading.Thread(target=loop, name="most-monitor-poll", daemon=True); self.poll_thread.start()
-    def stop(self):
-        self.stop_event.set()
-        if self.poll_thread: self.poll_thread.join(timeout=45)
-        if self.delivery_thread: self.delivery_thread.join(timeout=30)
+        with self.guard:
+            if self.poll_thread or self.stopping: return
+            self.poll_thread = threading.Thread(target=loop, name="most-monitor-poll", daemon=True)
+            self.poll_thread.start()
+    def stop(self, timeout=45):
+        deadline = time.monotonic() + max(0, timeout)
+        with self.guard:
+            self.stopping = True
+            self.stop_event.set()
+            poll_thread = self.poll_thread
+        def join_before_deadline(thread):
+            if thread and thread is not threading.current_thread():
+                thread.join(timeout=max(0, deadline - time.monotonic()))
+        join_before_deadline(poll_thread)
+        if poll_thread and poll_thread.is_alive():
+            return False
+        with self.guard:
+            refresh_thread = self.refresh_thread
+        join_before_deadline(refresh_thread)
+        if refresh_thread and refresh_thread.is_alive():
+            return False
+        # _refresh can start delivery immediately before it exits, so inspect
+        # the delivery worker only after the refresh worker has been joined.
+        with self.guard:
+            delivery_thread = self.delivery_thread
+        join_before_deadline(delivery_thread)
+        return not any(thread and thread.is_alive() for thread in
+                       (poll_thread, refresh_thread, delivery_thread))
     def refresh(self, max_age=0):
         with self.guard:
+            if self.stopping:
+                raise RuntimeError('monitor is stopping')
             if self.refreshing: future = self.refreshing
             elif time.time() - self.last_refresh < 5: return self._visible_snapshot(self.core.snapshot())
             else:
                 future = concurrent.futures.Future(); self.refreshing = future
-                threading.Thread(target=self._refresh, args=(future,max_age), daemon=True).start()
+                self.refresh_thread = threading.Thread(target=self._refresh, args=(future,max_age), name="most-monitor-refresh", daemon=True)
+                self.refresh_thread.start()
         return future.result(timeout=45)
     def _refresh(self, future, max_age=0):
         try:
@@ -132,6 +157,7 @@ def _handler(service):
    if not self._guard(): return self._send(403,{"error":"local client required"})
    p=urlparse(self.path); q=parse_qs(p.query)
    try:
+    if p.path=="/most/v1/health": return self._send(200,{"ok":True,"service":"most-monitor"})
     if p.path=="/most/v1/usage": return self._send(200,service.usage(q.get("maxAge",[300])[0],provider=q.get("provider",[None])[0],account_ref=q.get("accountRef",[None])[0],host_id=q.get("hostId",[None])[0]))
     if p.path=="/most/v1/history": return self._send(200,{"history":service.core.history(q.get("limit",[200])[0])})
     if p.path=="/most/v1/routing-status": return self._send(200,{"usage_status":"available","recommend_model":"unsupported"})
@@ -140,7 +166,12 @@ def _handler(service):
    except Exception: return self._send(503,{"error":"unavailable"})
   def do_POST(self):
    if not self._guard(): return self._send(403,{"error":"local client required"})
-   if urlparse(self.path).path!="/most/v1/refresh": return self._send(404,{"error":"not found"})
+   path=urlparse(self.path).path
+   if path=="/most/v1/shutdown":
+    self._send(202,{"ok":True,"service":"most-monitor"})
+    threading.Thread(target=self.server.shutdown,daemon=True).start()
+    return
+   if path!="/most/v1/refresh": return self._send(404,{"error":"not found"})
    try: return self._send(200,service.refresh())
    except Exception: return self._send(503,{"error":"unavailable"})
  return Handler
@@ -163,7 +194,10 @@ def main(argv=None):
   except Exception: server.server_close(); raise
   server.RequestHandlerClass=_handler(service); service.start_polling(); logging.info('monitor_started port=%s',config['port'])
   try: server.serve_forever()
-  finally: service.stop(); server.server_close(); service.core.close()
+  finally:
+   while not service.stop(timeout=45):
+    logging.warning('monitor_shutdown_waiting_for_workers')
+   server.server_close(); service.core.close()
   return 0
  # CLI deliberately does not collect: it must talk to the running daemon.
  import urllib.request

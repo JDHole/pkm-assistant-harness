@@ -28,6 +28,8 @@ Observed increase in each weekly scope, in Europe/Berlin, since its first compar
 
 ## Run and deployment
 
+The bridge's manual **Restart mostu i monitora** control recovers a missing daemon or gracefully restarts a healthy one through guarded local health and shutdown endpoints. It reports the monitor and ChatMock results separately; automatic ChatMock recovery keeps its existing behavior.
+
 Python 3.12+ stdlib. A small vendored Europe/Berlin TZif from the installed tzdata 2026.3 distribution supports Windows without system IANA data; licenses are in `zoneinfo/`. Core has no third-party Python imports. The official Claude executable is a separately installed vendor binary, not committed here.
 
 Run `node build_ui.cjs` first. This bundles the UI into one CommonJS file with Obsidian external; the host cannot resolve relative helper modules from a plugin entrypoint. `install_local.py --help` describes explicit local deployment; it defaults to `--providers codex`, so Claude is optional. It preflights the configuration and source set, creates backups, deploys the UI and Home modules, and writes a hidden Windows startup launcher. It never starts or restarts applications. Existing private config backups remain outside the vault. The root operator then starts the monitor and reloads only the Most Status plugin after the gates pass.
