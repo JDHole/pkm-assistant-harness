@@ -39,7 +39,7 @@ def _scope_key(scope):
 
 class MonitorCore:
     """Single-process SQLite store. All public methods are lock protected."""
-    def __init__(self, data_dir, host_id=None, notifier=None, snapshot_path=None):
+    def __init__(self, data_dir, host_id=None, notifier=None, snapshot_path=None, enabled_providers=None):
         self.data_dir = Path(data_dir)
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.path = self.data_dir / "most-monitor.sqlite3"
@@ -47,6 +47,10 @@ class MonitorCore:
         self.snapshot_path = Path(snapshot_path) if snapshot_path else None
         self.host_id = host_id or 'host-' + hashlib.sha256(socket.gethostname().encode()).hexdigest()[:16]
         self.notifier = notifier
+        providers=('codex','claude') if enabled_providers is None else tuple(enabled_providers)
+        if not providers or any(not isinstance(x,str) or x not in ('codex','claude') for x in providers) or len(set(providers)) != len(providers):
+            raise ValueError('enabled_providers must contain codex, claude, or both')
+        self.enabled_providers = frozenset(providers)
         self.lock = threading.RLock()
         self.delivery_lock = threading.Lock()
         self.db = sqlite3.connect(str(self.path), check_same_thread=False)
@@ -63,6 +67,23 @@ class MonitorCore:
           CREATE TABLE IF NOT EXISTS alerts (id TEXT PRIMARY KEY, dedup TEXT UNIQUE, payload TEXT, created_at REAL, delivered INTEGER);
         """)
         self.db.commit()
+        # Keep the audit rows, but retire queued toasts for providers this
+        # runtime has explicitly disabled. They must not fire after re-enable.
+        pending=self.db.execute("SELECT id,payload FROM alerts WHERE delivered=0").fetchall()
+        for row in pending:
+            try:
+                alert=json.loads(row['payload'])
+                provider=alert.get('provider') if isinstance(alert,dict) else None
+            except (TypeError,ValueError): provider=None
+            if provider not in self.enabled_providers:
+                self.db.execute("UPDATE alerts SET delivered=-4 WHERE id=?", (row['id'],))
+        self.db.commit()
+        if self._load_raw():
+            current=self.snapshot()
+            if current:
+                self._save_raw(current)
+                self.db.commit()
+                self._export(current)
 
     def close(self):
         with self.delivery_lock, self.lock:
@@ -153,6 +174,7 @@ class MonitorCore:
             old_by = {(a.get("provider"), a.get("accountRef")): a for a in old.get("accounts", [])}
             result = []
             for incoming in accounts:
+                if incoming.get('provider') not in self.enabled_providers: continue
                 a = _clean(dict(incoming)); key = (a.get("provider"), a.get("accountRef"))
                 prior = old_by.get(key)
                 if not prior and str(a.get('accountRef', '')).endswith('-unknown'):
@@ -209,11 +231,21 @@ class MonitorCore:
     def deliver_pending(self):
         if not self.notifier: return
         with self.delivery_lock:
-            with self.lock: pending = list(self.db.execute('SELECT id,payload FROM alerts WHERE delivered=0 ORDER BY created_at'))
-            for row in pending:
+            with self.lock:
+                rows=list(self.db.execute('SELECT id,payload FROM alerts WHERE delivered=0 ORDER BY created_at'))
+                pending=[]
+                for row in rows:
+                    try: alert=json.loads(row['payload'])
+                    except (TypeError,ValueError): alert={}
+                    if not isinstance(alert,dict): alert={}
+                    if alert.get('provider') not in self.enabled_providers:
+                        self.db.execute('UPDATE alerts SET delivered=-4 WHERE id=?',(row['id'],))
+                    else: pending.append((row,alert))
+                self.db.commit()
+            for row,alert in pending:
                 with self.lock:
                     self.db.execute('UPDATE alerts SET delivered=-3 WHERE id=?', (row['id'],)); self.db.commit()
-                try: ok = self.notifier.notify(json.loads(row['payload']))
+                try: ok = self.notifier.notify(alert)
                 except Exception: ok = False
                 with self.lock:
                     self.db.execute('UPDATE alerts SET delivered=? WHERE id=?', (1 if ok else -1, row['id'])); self.db.commit()
@@ -223,7 +255,14 @@ class MonitorCore:
     def _summarize(self, s):
         states = [a.get('status') for a in s['accounts']]
         s['status'] = 'fresh' if states and all(x == 'fresh' for x in states) else 'partial' if 'fresh' in states else 'stale' if 'stale' in states else 'error'
-        delivery = [r[0] for r in self.db.execute('SELECT delivered FROM alerts ORDER BY created_at DESC LIMIT 100')]
+        delivery=[]
+        for row in self.db.execute('SELECT delivered,payload FROM alerts ORDER BY created_at DESC'):
+            try: alert=json.loads(row['payload'])
+            except (TypeError,ValueError): continue
+            if not isinstance(alert,dict): continue
+            if alert.get('provider') in self.enabled_providers:
+                delivery.append(row['delivered'])
+                if len(delivery)==100: break
         s['notificationStatus'] = 'error' if -1 in delivery or -3 in delivery else 'pending' if 0 in delivery else 'submitted' if 1 in delivery else 'disabled' if not self.notifier else 'none'
         s['notificationReason'] = getattr(self.notifier, 'LAST_STATUS', None)
 
@@ -234,7 +273,15 @@ class MonitorCore:
         return {"id": str(uuid.uuid4()), "kind": kind, "provider": a.get("provider"), "accountRef": a.get("accountRef"), "poolId": w.get("poolId"), "windowId": w.get("windowId"), "scope": w.get("scope", {}), "threshold": threshold, "value": value, "createdAt": now, "epoch": epoch, "message": message}
 
     def _recent_alerts(self):
-        return [json.loads(r[0]) for r in self.db.execute("SELECT payload FROM alerts ORDER BY created_at DESC LIMIT 100")]
+        alerts=[]
+        for row in self.db.execute('SELECT payload FROM alerts ORDER BY created_at DESC'):
+            try: alert=json.loads(row[0])
+            except (TypeError,ValueError): continue
+            if not isinstance(alert,dict): continue
+            if alert.get('provider') in self.enabled_providers:
+                alerts.append(alert)
+                if len(alerts)==100: break
+        return alerts
 
     def _export(self, snapshot):
         for path in [self.export_path] + ([self.snapshot_path] if self.snapshot_path else []):
@@ -250,14 +297,20 @@ class MonitorCore:
             s = self._load_raw()
             if not s: return None
             if host_id and host_id != self.host_id: raise ValueError("hostId mismatch")
-            s = _clean(s); s["accounts"] = [self._materialize_account(a, now) for a in s.get("accounts", [])]
+            s = _clean(s); s["accounts"] = [self._materialize_account(a, now) for a in s.get("accounts", [])
+                                                 if a.get('provider') in self.enabled_providers]
+            s['alerts'] = self._visible_alerts(s.get('alerts', []))
             for a in s["accounts"]: a["daily"] = self._daily(a, now)
             if provider: s["accounts"] = [a for a in s["accounts"] if a.get("provider") == provider]
             if account_ref: s["accounts"] = [a for a in s["accounts"] if a.get("accountRef") == account_ref]
             self._summarize(s)
             return s
 
+    def _visible_alerts(self, alerts):
+        return [a for a in alerts if isinstance(a,dict) and a.get('provider') in self.enabled_providers]
+
     def history(self, limit=200):
         limit = max(1, min(int(limit), 200))
         with self.lock:
-            return [dict(r) for r in self.db.execute("SELECT * FROM samples ORDER BY received_at DESC LIMIT ?", (limit,))]
+            marks=','.join('?' for _ in self.enabled_providers)
+            return [dict(r) for r in self.db.execute(f"SELECT * FROM samples WHERE provider IN ({marks}) ORDER BY received_at DESC LIMIT ?", (*self.enabled_providers,limit))]

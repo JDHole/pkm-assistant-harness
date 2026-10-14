@@ -91,10 +91,12 @@ function longText(status, error) {
     ].filter(Boolean).join('\n');
 }
 
-function freshnessText(account, row, now) {
+function freshnessText(account, row, now, transportError = null) {
+    if (CORE.displayFreshness(row, transportError) === 'error') return 'błąd monitora - zachowany ostatni zapis';
     if (account.status === 'error') return 'błąd odczytu - pokazuję zachowany ostatni zapis';
     if (!finite(account.validUntil)) return 'ważność odczytu nieznana';
     if (account.validUntil <= now) return 'odczyt wygasł';
+    if (!finite(account.observedAt) || account.observedAt > now + 5 || now - account.observedAt > 300) return 'odczyt za stary';
     if (finite(row.resetsAt) && row.resetsAt <= now) return 'okno jest po resecie';
     return row.fresh ? 'świeże' : statusLabel(account.status);
 }
@@ -108,27 +110,22 @@ function scopeLabel(scope) {
     return CORE.scopeText(scope);
 }
 
-function usageStatusText(snapshot, now) {
-    const rows = CORE.usageRows(snapshot, now);
-    if (!rows.length) return null;
-    const perProvider = new Map();
-    rows.forEach((row) => {
-        const current = perProvider.get(row.provider);
-        if (!current || (finite(row.usedPercent) ? row.usedPercent : -1) > (finite(current.usedPercent) ? current.usedPercent : -1)) {
-            perProvider.set(row.provider, row);
-        }
-    });
-    const providers = Array.from(perProvider.values()).map((row) => `${row.provider || 'konto'} ${percent(row.usedPercent) || '?'}`);
-    return providers.join(' / ');
+function usageStatusText(snapshot, now, error = null) {
+    return CORE.usageStatusText(snapshot, now, error);
 }
 
 function usageStatusTooltip(snapshot, error, now) {
     const lines = [];
-    (snapshot && snapshot.accounts || []).forEach((account) => {
-        lines.push(`${account.label || account.provider || 'konto'}: ${statusLabel(account.status)} · ${ageText(account.observedAt, now)}`);
+    const accounts = (snapshot && snapshot.accounts || []).filter((account) => account.provider === 'codex');
+    accounts.forEach((account) => {
+        const rows = CORE.usageRows({ accounts: [account] }, now);
+        const current = rows.some((row) => row.fresh);
+        const state = error ? 'błąd monitora, zachowany ostatni zapis'
+            : current ? 'świeże' : account.status === 'fresh' ? 'nieświeże' : statusLabel(account.status);
+        lines.push(`${account.label || 'Codex/Work'}: ${state} · ${ageText(account.observedAt, now)}`);
+        rows.forEach((row) => lines.push(`${row.label || row.windowId || 'okno'}: ${percent(row.usedPercent) || 'brak'} użyte · ${CORE.scopeText(row.scope)} · ${duration(row.windowMinutes)} · ${resetText(row.resetsAt)} · ${error ? 'błąd monitora - zachowany zapis' : freshnessText(account, row, now)}`));
     });
-    const worst = CORE.worstUsageRow(snapshot, now);
-    if (worst) lines.push(`Najwyższe użycie: ${worst.label || worst.windowId || 'okno'} · ${CORE.scopeText(worst.scope)} · ${resetText(worst.resetsAt)}`);
+    if (!accounts.length) lines.push('Codex/Work: brak danych w monitorze');
     if (error) lines.push(`Błąd monitora: ${error}`);
     return lines.join('\n');
 }
@@ -153,15 +150,16 @@ function addProgress(parent, value, label) {
     return progress;
 }
 
-function renderWindow(card, account, row, now) {
+function renderWindow(card, account, row, now, transportError = null) {
     const window = create(card, 'div', 'most-usage-window');
     create(window, 'strong', '', row.label || row.windowId || 'okno');
-    create(window, 'span', 'most-usage-value', percent(row.usedPercent) || 'brak odczytu');
+    create(window, 'span', 'most-usage-value', `${percent(row.usedPercent) || 'brak odczytu'} użyte`);
     addProgress(window, row.usedPercent, `${row.label || row.windowId || 'okno'}: ${percent(row.usedPercent) || 'brak odczytu'}`);
     const model = row.scope && row.scope.model && row.scope.model.display_name;
     create(window, 'small', 'most-usage-scope', model ? `Model: ${model}` : CORE.scopeText(row.scope));
     create(window, 'small', 'most-usage-time', `${duration(row.windowMinutes)} · ${resetText(row.resetsAt)}`);
-    create(window, 'small', row.fresh ? 'most-usage-fresh' : 'most-usage-stale', freshnessText(account, row, now));
+    const displayState = CORE.displayFreshness(row, transportError);
+    create(window, 'small', displayState === 'fresh' ? 'most-usage-fresh' : 'most-usage-stale', freshnessText(account, row, now, transportError));
 
     const daily = (account.daily || []).find((item) => item
         && item.poolId === row.poolId
@@ -254,26 +252,27 @@ class UsageModal extends Modal {
                 : 'Ostatnie powiadomienie Windows nie zostało wysłane. Ostrzeżenia pozostają w panelu.');
         }
         const accounts = create(body, 'div', 'most-usage-accounts');
-        (Array.isArray(snapshot.accounts) ? snapshot.accounts : []).forEach((account) => {
+        (Array.isArray(snapshot.accounts) ? snapshot.accounts : []).filter((account) => account.provider === 'codex').forEach((account) => {
             const card = create(accounts, 'section', `most-usage-account most-usage-${account.status || 'unknown'}`);
             create(card, 'h3', '', account.label || account.provider || 'konto');
             if (Array.isArray(account.coverage)) create(card, 'p', 'most-usage-scope', account.coverage.join(' · '));
             const rows = CORE.usageRows({ accounts: [account] }, now);
-            const visibleStatus = rows.some((row) => row.fresh)
+            const visibleStatus = error ? 'błąd monitora, zachowany ostatni zapis'
+                : rows.some((row) => row.fresh)
                 ? 'świeże'
                 : (account.status === 'fresh' ? 'nieświeże' : statusLabel(account.status));
             create(card, 'p', 'most-usage-status', `${visibleStatus}${account.reason ? `: ${account.reason}` : ''}`);
             if (account.status === 'error') create(card, 'p', 'most-usage-error', 'Błąd odczytu - zachowany snapshot nie jest bieżącym stanem.');
             create(card, 'p', 'most-usage-observed', `${ageText(account.observedAt, now)} · obserwacja ${dateTime(account.observedAt)}`);
             if (!rows.length) create(card, 'p', 'most-usage-empty', 'Brak okien użycia w tym odczycie.');
-            rows.forEach((row) => renderWindow(card, account, row, now));
+            rows.forEach((row) => renderWindow(card, account, row, now, error));
         });
         const alerts = create(body, 'section', 'most-usage-section');
         create(alerts, 'h3', '', 'Ostatnie alerty');
-        const items = Array.isArray(snapshot.alerts) ? snapshot.alerts : [];
+        const items = Array.isArray(snapshot.alerts) ? snapshot.alerts.filter((alert) => alert.provider === 'codex') : [];
         if (!items.length) create(alerts, 'p', 'most-usage-empty', 'Brak alertów.');
         items.slice(0, 8).forEach((alert) => create(alerts, 'p', 'most-usage-alert', alert.message || alert.kind || 'alert'));
-        renderHistory(body, this.plugin.usageHistory, snapshot);
+        renderHistory(body, this.plugin.usageHistory.filter((row) => row.provider === 'codex'), snapshot);
         const history = body.querySelector('.most-usage-history');
         if (history) history.open = historyOpen;
         this.contentEl.scrollTop = scrollTop;
@@ -409,24 +408,29 @@ class MostStatusPlugin extends Plugin {
                 return;
             }
             root.empty();
-            create(root, 'strong', '', snapshot ? usageStatusText(snapshot, Date.now() / 1000) || 'Użycie subskrypcji' : 'Użycie subskrypcji');
+            create(root, 'strong', '', snapshot
+                ? usageStatusText(snapshot, Date.now() / 1000, error) || 'Użycie subskrypcji'
+                : error ? 'Codex/Work: błąd monitora' : 'Czekam na Codex/Work');
             if (error) create(root, 'span', 'most-usage-tile-error', `błąd: ${error}`);
             if (!snapshot) {
+                root.setAttribute('title', error ? `Błąd monitora: ${error}` : 'Czekam na lokalny monitor Codex/Work');
                 create(root, 'span', 'most-usage-tile-state', 'czekam na monitor');
                 return;
             }
             const now = Date.now() / 1000;
-            const worst = CORE.worstUsageRow(snapshot, now);
+            const worst = CORE.worstUsageRow({ accounts: (snapshot.accounts || []).filter((account) => account.provider === 'codex') }, now);
             if (!worst) {
                 create(root, 'span', 'most-usage-tile-state', 'brak okien użycia');
                 return;
             }
             create(root, 'span', 'most-usage-tile-state', `${worst.accountLabel || worst.provider || 'konto'} · ${worst.label || worst.windowId || 'okno'}`);
-            create(root, 'span', 'most-usage-tile-window', `${percent(worst.usedPercent) || 'brak odczytu'} · ${scopeLabel(worst.scope)}`);
+            create(root, 'span', 'most-usage-tile-window', `${percent(worst.usedPercent) || 'brak odczytu'} użyte · ${scopeLabel(worst.scope)}`);
             addProgress(root, worst.usedPercent, `${worst.label || worst.windowId || 'okno'}: ${percent(worst.usedPercent) || 'brak odczytu'}`);
-            const tileFreshness = worst.accountStatus === 'error' ? 'błąd odczytu' : (worst.fresh ? 'świeże' : 'nieświeże');
-            create(root, 'span', worst.fresh ? 'most-usage-tile-fresh' : 'most-usage-tile-stale', `${tileFreshness} · ${ageText(worst.observedAt, now)} · ${resetText(worst.resetsAt)}`);
-            root.setAttribute('title', `${worst.label || worst.windowId || 'okno'}\n${CORE.scopeText(worst.scope)}\n${ageText(worst.observedAt, now)}\n${resetText(worst.resetsAt)}`);
+            const displayState = CORE.displayFreshness(worst, error);
+            const tileFreshness = displayState === 'error' ? 'błąd monitora, zachowany ostatni zapis'
+                : worst.accountStatus === 'error' ? 'błąd odczytu' : (displayState === 'fresh' ? 'świeże' : 'nieświeże');
+            create(root, 'span', displayState === 'fresh' ? 'most-usage-tile-fresh' : 'most-usage-tile-stale', `${tileFreshness} · ${ageText(worst.observedAt, now)} · ${resetText(worst.resetsAt)}`);
+            root.setAttribute('title', `${error ? `Błąd monitora: ${error}\nOstatni zapis.\n` : ''}${worst.label || worst.windowId || 'okno'}\n${percent(worst.usedPercent) || 'brak'} użyte · ${scopeLabel(worst.scope)}\n${ageText(worst.observedAt, now)}\n${resetText(worst.resetsAt)}\n${displayState === 'fresh' ? 'świeże' : displayState === 'error' ? 'błąd monitora' : 'nieświeże'}`);
         };
         unsubscribe = this.subscribeUsage(render);
         if (component && typeof component.register === 'function') component.register(unsubscribe);
@@ -456,10 +460,10 @@ class MostStatusPlugin extends Plugin {
     renderStatus() {
         if (this.unloaded) return;
         const now = Date.now() / 1000;
-        const usage = usageStatusText(this.usageSnapshot, now);
+        const usage = CORE.usageStatusText(this.usageSnapshot, now, this.usageError);
         const usageTooltip = usageStatusTooltip(this.usageSnapshot, this.usageError, now);
-        this.dot.setAttribute('data-level', levelOf(this.status));
-        this.text.setText(usage || shortText(this.status));
+        this.dot.setAttribute('data-level', CORE.statusBarLevel(this.status, this.usageSnapshot, now, this.usageError));
+        this.text.setText(usage || 'Codex/Work: czekam na monitor');
         this.text.toggleClass('is-eco', Boolean(this.status && this.status.usage && this.status.usage.eco_mode));
         this.item.setAttribute('title', [longText(this.status, this.statusError), usageTooltip].filter(Boolean).join('\n\n'));
     }
@@ -474,7 +478,7 @@ class MostStatusPlugin extends Plugin {
             .setIcon('leaf')
             .setDisabled(!this.status)
             .onClick(() => void this.post(ECO, { on: !eco }, eco ? 'Tryb oszczędny wyłączony' : 'Tryb oszczędny włączony')));
-        menu.addItem((item) => item.setTitle('Restart mostu (ChatMock)').setIcon('rotate-ccw').onClick(() => void this.post(RESTART, {}, 'Restart ChatMocka zlecony')));
+        menu.addItem((item) => item.setTitle('Restart mostu i monitora').setIcon('rotate-ccw').onClick(() => void this.post(RESTART, {}, 'Restart mostu i monitora')));
         menu.showAtMouseEvent(event);
     }
 
@@ -487,8 +491,11 @@ class MostStatusPlugin extends Plugin {
                 body: JSON.stringify(body),
                 throw: false
             });
-            if (response.status >= 400) throw Error(`HTTP ${response.status}`);
-            if (!this.unloaded) new Notice(message);
+            const result = response.json || {};
+            const serviceStatus = (key, name) => `${name}: ${result[key] && result[key].ok ? 'OK' : `błąd (${result[key] && result[key].error || 'niepotwierdzony'})`}`;
+            const restartDetails = `${serviceStatus('monitor', 'Most Monitor')}; ${serviceStatus('backend', 'ChatMock')}`;
+            if (response.status >= 400) throw Error(url === RESTART ? restartDetails : `HTTP ${response.status}`);
+            if (!this.unloaded) new Notice(url === RESTART ? `Restart mostu i monitora: ${restartDetails}` : message);
         } catch (error) {
             if (!this.unloaded) new Notice(`Most: błąd - ${error.message || error}`);
         }
@@ -497,4 +504,4 @@ class MostStatusPlugin extends Plugin {
 }
 
 module.exports = MostStatusPlugin;
-module.exports.__test = { levelOf, shortText, longText, duration, resetText, statusLabel, ageText, freshnessText };
+module.exports.__test = { levelOf, shortText, longText, duration, resetText, statusLabel, ageText, freshnessText, usageStatusText, renderWindow };

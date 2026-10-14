@@ -138,6 +138,33 @@ def main() -> int:
     log_path = BASE_DIR / "most" / "most.log"
     models_path = BASE_DIR / "most" / "most_models.json"
     usage_path = BASE_DIR / "usage_limits.json"
+    monitor_snapshot_path = BASE_DIR / "most-monitor" / "state" / "most-snapshot.json"
+
+    def write_monitor_snapshot(short_percent: float = 8.0, weekly_percent: float = 1.0) -> None:
+        stamp = time.time()
+        monitor_snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+        account = {
+            "provider": "codex", "accountRef": "test-account", "label": "Codex/Work",
+            "authMode": "subscription", "status": "fresh", "reason": None,
+            "source": "test", "observedAt": stamp, "receivedAt": stamp,
+            "validUntil": stamp + 3600, "coverage": ["Codex/Work"], "plan": "test",
+            "windows": [
+                {"poolId": "primary", "windowId": "short", "label": "5h", "scope": {},
+                 "windowKind": "rolling", "windowMinutes": 300, "metricKind": "usage_percent",
+                 "unit": "percent", "value": short_percent, "usedPercent": short_percent,
+                 "resetsAt": stamp + 15898},
+                {"poolId": "secondary", "windowId": "week", "label": "7d", "scope": {},
+                 "windowKind": "rolling", "windowMinutes": 10080, "metricKind": "usage_percent",
+                 "unit": "percent", "value": weekly_percent, "usedPercent": weekly_percent,
+                 "resetsAt": None},
+            ],
+        }
+        monitor_snapshot_path.write_text(json.dumps({
+            "schemaVersion": 1, "snapshotId": "test-snapshot", "hostId": "test-host",
+            "collectorVersion": "1.0.0", "receivedAt": stamp, "validUntil": stamp + 3600,
+            "status": "fresh", "accounts": [account], "alerts": [],
+            "notificationStatus": "not_configured",
+        }), encoding="utf-8")
 
     print("--- startuje fake backend (tryb 200) ---")
     fake_proc = start_fake_backend()
@@ -241,14 +268,15 @@ def main() -> int:
             check("most_models.json: nadal 10 modeli", len(on_disk.get("models", [])) == 10,
                   f"count={len(on_disk.get('models', []))}")
 
-        # --- (f) usage_limits.json - dwa okna ---
+        # --- (f) sanitized Most Monitor snapshot - old ChatMock file is a conflict probe ---
         now_iso = __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat()
         usage_payload = {
             "captured_at": now_iso,
-            "primary": {"used_percent": 8.0, "window_minutes": 300, "resets_in_seconds": 15898},
-            "secondary": {"used_percent": 1.0, "window_minutes": 10080, "resets_in_seconds": 289753},
+            "primary": {"used_percent": 97.0, "window_minutes": 300, "resets_in_seconds": 15898},
+            "secondary": {"used_percent": 96.0, "window_minutes": 10080, "resets_in_seconds": 289753},
         }
         usage_path.write_text(json.dumps(usage_payload), encoding="utf-8")
+        write_monitor_snapshot()
 
         status, body = http_json("GET", f"{BRIDGE_URL}/most/status")
         usage = body.get("usage") if body else None
@@ -258,6 +286,11 @@ def main() -> int:
               f"usage={usage}")
         check("usage.weekly_used_percent == 1.0", bool(usage) and usage.get("weekly_used_percent") == 1.0,
               f"usage={usage}")
+        check("unknown reset stays null without hiding usage", bool(usage) and usage.get("resets_in") is None and usage.get("weekly_used_percent") == 1.0,
+              f"usage={usage}")
+        check("legacy ChatMock conflict is ignored", bool(usage) and usage.get("short_used_percent") != 97.0 and usage.get("weekly_used_percent") != 96.0,
+              f"usage={usage}")
+        check("monitor status is fresh", bool(usage) and usage.get("monitor_status") == "fresh", f"usage={usage}")
 
         # --- (g) health: 400 z backendu na /v1/chat/completions NIE restartuje ---
         print("--- restart fake backend w FAKE_MODE=400 ---")
@@ -296,17 +329,10 @@ def main() -> int:
         # Petla zdrowia mostu ma wlasny mikro-ping (MOST_USAGE_REFRESH=3s w tym env) ktory
         # bije w BACKEND_URL bezposrednio (mija _pump), z tym samym modelem co nasze testy -
         # w trybie overload_n zjadalby jeden ze "slotow" fake'a i myliby liczniki. Trzymamy
-        # usage_limits.json swiezy (age_s ~ 0) w oknie kazdego pod-testu, zeby _usage_needs_refresh()
-        # zostalo False i ping sie nie odpalil w trakcie pomiaru.
+        # Keep the sanitized monitor snapshot fresh in each sub-test.
 
         def keep_usage_fresh() -> None:
-            now_iso = __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat()
-            usage_payload = {
-                "captured_at": now_iso,
-                "primary": {"used_percent": 8.0, "window_minutes": 300, "resets_in_seconds": 15898},
-                "secondary": {"used_percent": 1.0, "window_minutes": 10080, "resets_in_seconds": 289753},
-            }
-            usage_path.write_text(json.dumps(usage_payload), encoding="utf-8")
+            write_monitor_snapshot()
 
         def status_counters() -> tuple[int | None, int | None]:
             _, body = http_json("GET", f"{BRIDGE_URL}/most/status")

@@ -25,9 +25,8 @@ Kontrakt providera, ktory ten plik gwarantuje:
      opoznienia z MOST_RETRY_DELAYS), a po wyczerpaniu prob oddaje 429 z Retry-After -
      zeby zadzialal wlasny backoff pluginu.
 
-Tray: ikonka kolorowa (zielona/zolta/czerwona), tooltip = limit tygodniowy
-ze snapshotu ChatMocka (~/.chatgpt-local/usage_limits.json), menu = restart /
-odswiez limit / logi / autostart / zamknij.
+Tray: ikonka kolorowa (zielona/zolta/czerwona), tooltip = świeże okna Codex
+z lokalnego snapshotu Most Monitor, menu = restart / odśwież limit / logi / autostart / zamknij.
 """
 from __future__ import annotations
 
@@ -36,13 +35,13 @@ import ctypes
 import json
 import logging
 import logging.handlers
+import math
 import os
 import re
 import subprocess
 import sys
 import threading
 import time
-from datetime import datetime, timezone
 from pathlib import Path
 
 import aiohttp
@@ -59,14 +58,19 @@ def _env_int(name: str, default: int) -> int:
 HOME = Path(os.path.expanduser("~"))
 BASE_DIR = Path(os.getenv("MOST_BASE_DIR") or (HOME / ".chatgpt-local"))
 MOST_DIR = BASE_DIR / "most"
-USAGE_PATH = BASE_DIR / "usage_limits.json"
 MODELS_PATH = MOST_DIR / "most_models.json"
+MONITOR_SNAPSHOT_PATH = Path(os.getenv("MOST_MONITOR_SNAPSHOT_PATH") or (BASE_DIR / "most-monitor" / "state" / "most-snapshot.json"))
 CHATMOCK_EXE = r"C:\Users\jdziu\AppData\Local\Programs\Python\Python312\Scripts\chatmock.exe"
 
 LISTEN_HOST = "127.0.0.1"
 LISTEN_PORT = _env_int("MOST_LISTEN_PORT", 1234)
 BACKEND_PORT = _env_int("MOST_BACKEND_PORT", 1235)
 BACKEND_URL = f"http://127.0.0.1:{BACKEND_PORT}"
+MONITOR_PORT = _env_int("MOST_MONITOR_PORT", 1236)
+MONITOR_URL = f"http://127.0.0.1:{MONITOR_PORT}"
+MONITOR_RESTART_TIMEOUT = 12.0
+MONITOR_DRAIN_TIMEOUT = 80.0
+MONITOR_REQUEST_TIMEOUT = 5.0
 
 MAX_CONCURRENT = _env_int("MOST_MAX_CONCURRENT", 6)      # slotow do backendu naraz
 QUEUE_MAX_DEPTH = _env_int("MOST_QUEUE_MAX_DEPTH", 16)   # czekajacych; powyzej -> 429 od reki
@@ -261,50 +265,239 @@ class Supervisor:
 
 SUP = Supervisor()
 
+# Manual restart serializes both front doors so tray and HTTP clicks share one
+# bounded monitor lifecycle operation. Automatic supervisor restarts stay separate.
+MANUAL_RESTART_LOCK = asyncio.Lock()
+
+
+async def _monitor_request(path: str, method: str = "GET") -> tuple[int | None, dict, str | None]:
+    try:
+        timeout = aiohttp.ClientTimeout(total=MONITOR_REQUEST_TIMEOUT)
+        async with aiohttp.ClientSession(timeout=timeout) as client:
+            async with client.request(method, f"{MONITOR_URL}{path}",
+                                      headers={"X-Most-Client": "local-v1"}) as response:
+                try:
+                    body = await response.json(content_type=None)
+                except (ValueError, aiohttp.ClientError):
+                    body = {}
+                return response.status, body if isinstance(body, dict) else {}, None
+    except aiohttp.ClientConnectorError as error:
+        os_error = getattr(error, "os_error", None)
+        if getattr(os_error, "winerror", None) in (10061, 1225) or getattr(os_error, "errno", None) in (61, 111, 10061):
+            return None, {}, "connection_refused"
+        return None, {}, "connection_error"
+    except asyncio.TimeoutError:
+        return None, {}, "timeout"
+    except aiohttp.ClientError:
+        return None, {}, "connection_error"
+
+
+async def _monitor_health() -> tuple[bool, str | None]:
+    status, body, error = await _monitor_request("/most/v1/health")
+    if error:
+        return False, error
+    if status == 200 and body.get("service") == "most-monitor" and body.get("ok") is True:
+        return True, None
+    if status is not None and status >= 500:
+        return False, f"http_{status}"
+    return False, "wrong_service"
+
+
+async def _shutdown_monitor() -> tuple[bool, str | None]:
+    status, body, error = await _monitor_request("/most/v1/shutdown", "POST")
+    if error:
+        return False, error
+    if status == 202 and body.get("service") == "most-monitor" and body.get("ok") is True:
+        return True, None
+    return False, f"http_{status}" if status is not None else "shutdown_failed"
+
+
+async def _wait_monitor_closed() -> tuple[bool, str | None]:
+    deadline = now() + MONITOR_DRAIN_TIMEOUT
+    while now() < deadline:
+        healthy, error = await _monitor_health()
+        if not healthy:
+            if error == "connection_refused":
+                return True, None
+            if error not in ("timeout", "connection_error"):
+                return False, error or "health_failed"
+        await asyncio.sleep(0.2)
+    return False, "shutdown_timeout"
+
+
+async def _launch_monitor() -> tuple[bool, str | None]:
+    monitor_dir = BASE_DIR / "most-monitor"
+    script = monitor_dir / "monitor.py"
+    config = monitor_dir / "config.json"
+    if not script.is_file() or not config.is_file():
+        return False, "monitor_install_missing"
+    pythonw = Path(sys.executable).with_name("pythonw.exe")
+    if not pythonw.is_file():
+        local_app_data = Path(os.getenv("LOCALAPPDATA", ""))
+        candidate = local_app_data / "Programs" / "Python" / "Python312" / "pythonw.exe"
+        pythonw = candidate if candidate.is_file() else Path()
+    if not pythonw.is_file():
+        return False, "pythonw_unavailable"
+    flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    try:
+        subprocess.Popen([str(pythonw), str(script), "--config", str(config), "serve"],
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, close_fds=True, creationflags=flags,
+                         cwd=str(monitor_dir))
+        return True, None
+    except OSError as error:
+        log.error("Nie udalo sie uruchomic Most Monitor: %s", error.__class__.__name__)
+        return False, "spawn_failed"
+
+
+async def _verify_monitor() -> tuple[bool, str | None]:
+    deadline = now() + MONITOR_RESTART_TIMEOUT
+    last_error = "connection_refused"
+    while now() < deadline:
+        healthy, error = await _monitor_health()
+        if healthy:
+            return True, None
+        if error != "connection_refused":
+            return False, error or "health_failed"
+        last_error = error
+        await asyncio.sleep(0.25)
+    return False, "health_timeout" if last_error == "connection_refused" else last_error
+
+
+async def manual_restart(reason: str) -> dict:
+    async with MANUAL_RESTART_LOCK:
+        monitor = {"ok": False, "error": None}
+        try:
+            healthy, health_error = await _monitor_health()
+            if healthy:
+                stopped, stop_error = await _shutdown_monitor()
+                if not stopped:
+                    monitor["error"] = stop_error or "shutdown_failed"
+                else:
+                    closed, close_error = await _wait_monitor_closed()
+                    if not closed:
+                        monitor["error"] = close_error or "shutdown_failed"
+            elif health_error == "connection_refused":
+                # A refused loopback connection is the only signal that permits a direct start.
+                pass
+            else:
+                monitor["error"] = health_error or "health_failed"
+
+            if monitor["error"] is None:
+                launched, launch_error = await _launch_monitor()
+                if not launched:
+                    monitor["error"] = launch_error or "spawn_failed"
+                else:
+                    ready, ready_error = await _verify_monitor()
+                    if ready:
+                        monitor["ok"] = True
+                    else:
+                        monitor["error"] = ready_error or "health_failed"
+        except Exception as error:
+            log.exception("Blad restartu Most Monitor")
+            monitor["error"] = f"monitor_restart_{error.__class__.__name__}"
+
+        backend = {"ok": False}
+        try:
+            backend["ok"] = bool(await SUP.restart(reason, manual=True))
+            if not backend["ok"]:
+                backend["error"] = "backend_restart_failed"
+        except Exception as error:
+            log.exception("Blad restartu ChatMocka")
+            backend["error"] = f"backend_restart_{error.__class__.__name__}"
+        result = {"ok": monitor["ok"] and backend["ok"],
+                  "monitor": monitor, "backend": backend}
+        log.info("restart reczny: monitor=%s backend=%s", monitor["ok"], backend["ok"])
+        return result
+
 # ------------------------------------------------------------------ odczyt limitu
 
 WEEKLY_MIN_MINUTES = 7 * 24 * 60
 
 
-def _window(raw: dict, cap_dt: datetime) -> dict:
+def _monitor_usage(snapshot: dict, current: float) -> dict | None:
+    """Adapt only the monitor's sanitized Codex snapshot; stale percentages stay hidden."""
+    if not isinstance(snapshot, dict):
+        return None
+    rows = []
+    account_statuses = []
+    observed = []
+    for account in snapshot.get("accounts", []):
+        if not isinstance(account, dict) or account.get("provider") != "codex":
+            continue
+        account_statuses.append(account.get("status", "unknown"))
+        stamp = account.get("observedAt")
+        if isinstance(stamp, (int, float)):
+            observed.append(stamp)
+        account_fresh = (account.get("status") == "fresh"
+                         and isinstance(stamp, (int, float)) and not isinstance(stamp, bool)
+                         and math.isfinite(stamp) and stamp <= current + 5 and current - stamp <= 300
+                         and isinstance(account.get("validUntil"), (int, float))
+                         and not isinstance(account.get("validUntil"), bool)
+                         and math.isfinite(account["validUntil"])
+                         and account["validUntil"] > current
+                         and isinstance(snapshot.get("validUntil"), (int, float))
+                         and not isinstance(snapshot.get("validUntil"), bool)
+                         and math.isfinite(snapshot["validUntil"])
+                         and snapshot["validUntil"] > current)
+        for window in account.get("windows", []):
+            if not isinstance(window, dict):
+                continue
+            raw_reset = window.get("resetsAt")
+            reset = raw_reset if isinstance(raw_reset, (int, float)) and not isinstance(raw_reset, bool) and math.isfinite(raw_reset) else None
+            fresh = account_fresh and (reset is None or reset > current)
+            value = window.get("usedPercent")
+            if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value) or not 0 <= value <= 100:
+                value = window.get("value")
+            if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value) or not 0 <= value <= 100:
+                value = None
+            rows.append({
+                "label": window.get("label") or window.get("windowId") or "okno",
+                "window_id": window.get("windowId"),
+                "scope": window.get("scope"),
+                "used_percent": value if fresh else None,
+                "window_minutes": window.get("windowMinutes") if isinstance(window.get("windowMinutes"), (int, float)) and not isinstance(window.get("windowMinutes"), bool) and math.isfinite(window.get("windowMinutes")) else None,
+                "reset_at": reset,
+                "fresh": fresh,
+            })
+    fresh_rows = [row for row in rows if row["fresh"] and row["used_percent"] is not None]
+    shorts = [row for row in fresh_rows if isinstance(row["window_minutes"], (int, float)) and row["window_minutes"] < WEEKLY_MIN_MINUTES]
+    weeks = [row for row in fresh_rows if isinstance(row["window_minutes"], (int, float)) and row["window_minutes"] >= WEEKLY_MIN_MINUTES]
+    # Legacy fields remain single-window compatibility summaries. The tray uses every row
+    # separately and never sums or merges different scopes.
+    short = max(shorts, key=lambda row: row["used_percent"], default=None)
+    weekly = max(weeks, key=lambda row: row["used_percent"], default=None)
+    valid_until = snapshot.get("validUntil")
+    current_snapshot = isinstance(valid_until, (int, float)) and valid_until > current
+    current_rows = [row for row in fresh_rows if current_snapshot]
     return {
-        "used_percent": float(raw.get("used_percent") or 0.0),
-        "window_minutes": int(raw.get("window_minutes") or 0),
-        "reset_at": cap_dt.timestamp() + float(raw.get("resets_in_seconds") or 0),
+        "short": short if current_rows else None,
+        "weekly": weekly if current_rows else None,
+        "windows": rows,
+        "status": "fresh" if current_rows else ("stale" if account_statuses else "unknown"),
+        "captured_at": max(observed) if observed else None,
+        "age_s": max(0.0, current - max(observed)) if observed else None,
     }
+
+
+def _usage_warning(usage: dict | None) -> bool:
+    """Warn for high usage in any fresh Codex window, including unknown-duration scopes."""
+    return bool(usage) and any(
+        window.get("fresh")
+        and isinstance(window.get("used_percent"), (int, float))
+        and not isinstance(window.get("used_percent"), bool)
+        and window["used_percent"] >= 80
+        for window in usage.get("windows", [])
+    )
 
 
 def read_usage() -> dict | None:
-    """Snapshot limitu z pliku ChatMocka. Rozbija na okno krotkie (5h) i tygodniowe."""
+    """Read the local sanitized monitor export. ChatMock quota files are never a fallback."""
     try:
-        raw = json.loads(USAGE_PATH.read_text(encoding="utf-8"))
+        raw = json.loads(MONITOR_SNAPSHOT_PATH.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
-    captured = raw.get("captured_at")
-    if captured is None:
-        return None
-    try:
-        cap_dt = datetime.fromisoformat(captured)
-    except ValueError:
-        return None
-
-    short = None
-    weekly = None
-    for key in ("primary", "secondary"):
-        w = raw.get(key)
-        if not isinstance(w, dict):
-            continue
-        if (w.get("window_minutes") or 0) >= WEEKLY_MIN_MINUTES:
-            weekly = _window(w, cap_dt)
-        else:
-            short = _window(w, cap_dt)
-
-    return {
-        "short": short,
-        "weekly": weekly,
-        "captured_at": cap_dt,
-        "age_s": max(0.0, now() - cap_dt.timestamp()),
-    }
+    return _monitor_usage(raw, now())
 
 
 def fmt_dur(seconds: float) -> str:
@@ -526,19 +719,22 @@ async def handle_status(request: web.Request) -> web.Response:
         "restart_reason": STATE.restart_reason,
         "usage": {
             "weekly_used_percent": weekly["used_percent"] if weekly else None,
-            "resets_in": fmt_dur(weekly["reset_at"] - now()) if weekly else None,
-            "snapshot_age": fmt_dur(usage["age_s"]) if usage else None,
+            "resets_in": fmt_dur(weekly["reset_at"] - now()) if weekly and weekly["reset_at"] is not None else None,
+            "snapshot_age": fmt_dur(usage["age_s"]) if usage and usage["age_s"] is not None else None,
             "short_used_percent": short["used_percent"] if short else None,
             "short_window_minutes": short["window_minutes"] if short else None,
-            "short_resets_in": fmt_dur(short["reset_at"] - now()) if short else None,
+            "short_resets_in": fmt_dur(short["reset_at"] - now()) if short and short["reset_at"] is not None else None,
+            "monitor_status": usage["status"] if usage else "unavailable",
+            "windows": usage["windows"] if usage else [],
             "eco_mode": eco_mode_on(),
         },
     })
 
 
 async def handle_restart(request: web.Request) -> web.Response:
-    ok = await SUP.restart("guzik / endpoint /most/restart", manual=True)
-    return web.json_response({"ok": ok, "state": STATE.backend_state}, status=200 if ok else 503)
+    result = await manual_restart("guzik / endpoint /most/restart")
+    result["state"] = STATE.backend_state
+    return web.json_response(result, status=200 if result["ok"] else 503)
 
 
 _TRANSIENT_STATUSES = {429, 500, 502, 503, 504}
@@ -877,32 +1073,34 @@ def _tray_body(loop: asyncio.AbstractEventLoop, stop_event: asyncio.Event) -> No
         if STATE.backend_state == "starting":
             return "starting"
         usage = read_usage()
-        if STATE.backend_state == "suspect":
+        if STATE.backend_state == "suspect" or not usage or usage.get("status") != "fresh":
             return "warn"
-        if usage:
-            short, weekly = usage["short"], usage["weekly"]
-            if (short and short["used_percent"] >= 80) or (weekly and weekly["used_percent"] >= 80):
-                return "warn"
+        if _usage_warning(usage):
+            return "warn"
         return "ok"
 
     def tooltip() -> str:
-        labels = {"ok": "Most OK", "warn": "Most OK (uwaga)", "down": "Most LEZY",
+        labels = {"ok": "Most OK", "warn": "Most: uwaga", "down": "Most LEZY",
                   "starting": "Most startuje..."}
         vs = visual_state()
         parts = [labels[vs]]
         usage = read_usage()
-        if usage:
-            short, weekly = usage["short"], usage["weekly"]
-            if short:
-                label = f"{short['window_minutes'] // 60}h"
-                parts.append(f"{label}: {short['used_percent']:.0f}% (reset {fmt_dur(short['reset_at'] - now())})")
-            if weekly:
-                parts.append(f"tydz: {weekly['used_percent']:.0f}% (reset {fmt_dur(weekly['reset_at'] - now())})")
-            if not short and not weekly:
-                parts.append("brak danych o limicie")
-            parts.append(f"stan sprzed {fmt_dur(usage['age_s'])}")
+        if usage and usage.get("status") == "fresh":
+            fresh_windows = [w for w in usage.get("windows", []) if w.get("fresh") and w.get("used_percent") is not None]
+            for window in fresh_windows:
+                minutes = window.get("window_minutes")
+                label = fmt_dur(minutes * 60) if isinstance(minutes, (int, float)) and minutes > 0 else window.get("label", "okno")
+                reset = window.get("reset_at")
+                reset_text = fmt_dur(reset - now()) if isinstance(reset, (int, float)) else "reset nieznany"
+                parts.append(f"{label}: {window['used_percent']:.0f}% użyte (reset {reset_text})")
+            if not fresh_windows:
+                parts.append("Codex/Work: brak bieżących okien")
+            if usage["age_s"] is not None:
+                parts.append(f"odczyt sprzed {fmt_dur(usage['age_s'])}")
+        elif usage:
+            parts.append(f"Codex/Work: {usage.get('status', 'nieznane')} - liczby ukryte")
         else:
-            parts.append("brak danych o limicie")
+            parts.append("Most Monitor niedostępny - liczby ukryte")
         if STATE.backend_state == "down" and STATE.restart_reason:
             parts.append(STATE.restart_reason)
         text = " | ".join(parts)
@@ -927,7 +1125,12 @@ def _tray_body(loop: asyncio.AbstractEventLoop, stop_event: asyncio.Event) -> No
         run_async(_do())
 
     def on_restart(icon, item) -> None:
-        run_async(SUP.restart("guzik w tray", manual=True))
+        async def _do():
+            result = await manual_restart("guzik w tray")
+            log.info("Restart mostu i monitora: Most Monitor %s, ChatMock %s",
+                     "OK" if result["monitor"]["ok"] else f"BLAD ({result['monitor'].get('error')})",
+                     "OK" if result["backend"]["ok"] else f"BLAD ({result['backend'].get('error')})")
+        run_async(_do())
 
     def on_logs(icon, item) -> None:
         os.startfile(str(MOST_DIR))
@@ -961,7 +1164,7 @@ def _tray_body(loop: asyncio.AbstractEventLoop, stop_event: asyncio.Event) -> No
         pystray.MenuItem(status_label, None, enabled=False),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("Odswiez limity (Most Monitor)", on_refresh),
-        pystray.MenuItem("Restart mostu", on_restart),
+        pystray.MenuItem("Restart mostu i monitora", on_restart),
         pystray.MenuItem("Otworz logi", on_logs),
         pystray.MenuItem("Autostart z Windows", on_autostart, checked=lambda item: autostart_on()),
         pystray.MenuItem("Tryb oszczedny (Astra -> Sol xhigh)", on_eco, checked=lambda item: eco_mode_on()),

@@ -1,7 +1,7 @@
 import json, tempfile, threading, time, unittest
 from http.client import HTTPConnection
 from http.server import ThreadingHTTPServer
-from monitor import Service, _handler
+from monitor import Service, _handler, enabled_providers
 from test_core import account, T
 
 class ServiceTests(unittest.TestCase):
@@ -49,3 +49,18 @@ class ServiceTests(unittest.TestCase):
   with patch('monitor.load_config',return_value={'port':1236}),patch('urllib.request.urlopen',return_value=response) as urlopen,patch('builtins.print'):
    self.assertEqual(0,main(['usage_status','--max-age','60','--provider','claude']))
    self.assertIn('maxAge=60',urlopen.call_args.args[0].full_url);self.assertEqual(45,urlopen.call_args.kwargs['timeout'])
+ def test_enabled_codex_only_does_not_call_claude_collector(self):
+  calls=[]
+  def codex(): calls.append('codex');return account(20,now=time.time())
+  def claude(): calls.append('claude');return account(20,provider='claude',accountRef='c',now=time.time())
+  service=Service({'dataDir':self.d.name,'notifications':False,'enabledProviders':['codex']},collectors={'codex':codex,'claude':claude})
+  try:
+   snapshot=service.refresh()
+   self.assertEqual(['codex'],calls);self.assertEqual(['codex'],[a['provider'] for a in snapshot['accounts']])
+  finally:
+   # refresh publishes its result just before starting the notifier worker.
+   while service.delivery_thread and service.delivery_thread.ident is None: time.sleep(.001)
+   service.stop();service.core.close()
+ def test_enabled_provider_validation_rejects_bad_shapes(self):
+  for value in ([],['codex','codex'],['unsupported'],[None],True):
+   with self.assertRaises(ValueError):enabled_providers({'enabledProviders':value})

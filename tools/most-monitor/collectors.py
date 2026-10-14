@@ -12,6 +12,7 @@ import tempfile
 import threading
 import time
 from datetime import datetime
+from codex_resolver import CodexBinaryMissing, resolve_codex_path
 
 VERSION = '1.0.0'
 FLAGS = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
@@ -124,7 +125,8 @@ def parse_codex(payload, auth, config, now):
 def collect_codex(config):
     a=base('codex');rpc=None
     try:
-        rpc=Rpc(config['codexPath'],config['dataDir'])
+        path=resolve_codex_executable(config)
+        rpc=Rpc(path,config['dataDir'])
         rpc.call('initialize',{'clientInfo':{'name':'most-monitor','version':VERSION},'capabilities':{'experimentalApi':True}})
         rpc.send({'method':'initialized'})
         auth=rpc.call('account/read',{'refreshToken':False}).get('account') or {}
@@ -137,6 +139,12 @@ def collect_codex(config):
     except Exception as exc:return error(a,exc)
     finally:
         if rpc:rpc.close()
+
+def resolve_codex_executable(config, config_path=None):
+    try:
+        return resolve_codex_path(config_path=config_path, explicit_path=config.get('codexPath'))
+    except CodexBinaryMissing as exc:
+        raise CollectionError('codex_executable_unavailable') from exc
 
 def _run(args, config, deadline):
     left=deadline-time.monotonic()

@@ -1,6 +1,7 @@
 'use strict';
 
 const finite = (value) => typeof value === 'number' && Number.isFinite(value);
+const MAX_FRESH_AGE_SECONDS = 300;
 
 function windowFresh(window, now) {
     return Boolean(window) && finite(now) && !(finite(window.resetsAt) && window.resetsAt <= now);
@@ -11,6 +12,9 @@ function accountFresh(account, now) {
     return Boolean(account)
         && account.status === 'fresh'
         && finite(now)
+        && finite(account.observedAt)
+        && account.observedAt <= now + 5
+        && now - account.observedAt <= MAX_FRESH_AGE_SECONDS
         && finite(account.validUntil)
         && account.validUntil > now
         && Array.isArray(account.windows)
@@ -36,6 +40,57 @@ function usageRows(snapshot, now) {
             fresh: accountFresh(account, now) && windowFresh(window, now)
         }))
     ));
+}
+
+function codexUsageRows(snapshot, now) {
+    return usageRows(snapshot, now).filter((row) => row.provider === 'codex');
+}
+
+function displayFreshness(row, transportError = null) {
+    if (transportError) return 'error';
+    return row && row.fresh ? 'fresh' : 'stale';
+}
+
+function usageStatusText(snapshot, now, error = null) {
+    const rows = codexUsageRows(snapshot, now);
+    const fresh = rows.filter((row) => row.fresh && finite(row.usedPercent));
+    if (error) return fresh.length ? 'Codex/Work: błąd monitora · ostatni zapis' : 'Codex/Work: błąd monitora';
+    if (!snapshot) return 'Codex/Work: czekam na monitor';
+    if (!rows.length) {
+        const accounts = (snapshot.accounts || []).filter((account) => account.provider === 'codex');
+        if (!accounts.length) return 'Codex/Work: brak danych w monitorze';
+        const status = accounts[0].status;
+        if (status === 'error') return 'Codex/Work: błąd odczytu';
+        if (status === 'auth_required') return 'Codex/Work: wymaga logowania';
+        if (status === 'unsupported') return 'Codex/Work: nieobsługiwane';
+        if (status === 'unknown') return 'Codex/Work: stan nieznany';
+        if (status === 'stale') return 'Codex/Work: odczyt nieświeży';
+        return 'Codex/Work: brak okien użycia';
+    }
+    // Keep each provider window separate: their percentages have different resets/scopes.
+    return rows.map((row) => {
+        if (!row.fresh) return `${row.label || row.windowId || 'Codex/Work'}: odczyt nieświeży`;
+        if (!finite(row.usedPercent)) return `${row.label || row.windowId || 'Codex/Work'}: brak odczytu`;
+        const minutes = row.windowMinutes;
+        let span = '';
+        if (finite(minutes) && minutes > 0) {
+            if (minutes % 1440 === 0) span = ` (${minutes / 1440} dni)`;
+            else if (minutes % 60 === 0) span = ` (${minutes / 60} h)`;
+            else span = ` (${minutes} min)`;
+        }
+        return `Codex/Work ${Math.round(row.usedPercent)}% użyte${span}`;
+    }).join(' · ');
+}
+
+function statusBarLevel(status, snapshot, now, error = null) {
+    const health = !status ? 'off' : status.state === 'down' ? 'down'
+        : status.state === 'starting' || status.state === 'suspect' ? 'warn'
+            : 'ok';
+    if (health === 'down') return 'down';
+    const rows = codexUsageRows(snapshot, now);
+    if (error || !rows.length || rows.some((row) => !row.fresh || !finite(row.usedPercent))) return 'warn';
+    if (rows.some((row) => row.usedPercent >= 80)) return 'warn';
+    return health;
 }
 
 function stableValue(value) {
@@ -110,6 +165,10 @@ module.exports = {
     windowFresh,
     accountFresh,
     usageRows,
+    codexUsageRows,
+    displayFreshness,
+    usageStatusText,
+    statusBarLevel,
     scopeText,
     historyScope,
     historyRow,

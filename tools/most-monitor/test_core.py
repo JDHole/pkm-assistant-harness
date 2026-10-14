@@ -80,3 +80,25 @@ class CoreTests(unittest.TestCase):
             def notify(self,a):return False
         self.c.close();self.c=MonitorCore(self.d.name,host_id='h',notifier=Note());self.put(97);self.c.deliver_pending();self.put(98,T+60)
         self.assertEqual('error',self.c.snapshot(T+60)['notificationStatus'])
+    def test_disabled_provider_is_hidden_after_restart_but_history_is_retained(self):
+        class Note:
+            def __init__(self): self.items=[]
+            def notify(self,a): self.items.append(a);return True
+        self.c.close();note=Note();self.c=MonitorCore(self.d.name,host_id='h',notifier=note)
+        self.c.ingest([account(97,provider='claude',accountRef='claude-fixture')],T)
+        self.assertEqual(1,len(self.c.history()))
+        self.c.close();self.c=MonitorCore(self.d.name,host_id='h',notifier=note,enabled_providers=['codex'])
+        snapshot=self.c.snapshot(T+1)
+        self.assertEqual([],snapshot['accounts']);self.assertEqual([],snapshot['alerts'])
+        self.assertEqual([],self.c.history());self.assertEqual(1,self.c.db.execute("SELECT COUNT(*) FROM samples WHERE provider='claude'").fetchone()[0])
+        self.c.deliver_pending();self.assertEqual([],note.items)
+        exported=json.loads((Path(self.d.name)/'most-snapshot.json').read_text())
+        self.assertEqual([],exported['accounts']);self.assertEqual([],exported['alerts'])
+        self.assertEqual([],self.c._load_raw()['accounts']);self.assertEqual([],self.c._load_raw()['alerts'])
+    def test_disabled_alert_retirement_persists_without_snapshot_and_bad_payload_is_ignored(self):
+        self.c.db.execute("INSERT INTO alerts VALUES(?,?,?,?,?)",('bad','bad','{broken',T,0));self.c.db.commit()
+        self.c.close();self.c=MonitorCore(self.d.name,host_id='h',enabled_providers=['codex'])
+        self.assertEqual(-4,self.c.db.execute("SELECT delivered FROM alerts WHERE id='bad'").fetchone()[0])
+        self.assertEqual([],self.c._recent_alerts())
+    def test_invalid_enabled_providers_are_rejected(self):
+        with self.assertRaises(ValueError):MonitorCore(self.d.name,enabled_providers=['codex','codex'])

@@ -1,7 +1,8 @@
 import copy,json,tempfile,unittest
 from pathlib import Path
 from unittest.mock import patch
-from collectors import parse_codex,parse_claude,collect_claude,CollectionError,percent,alias,_confirmed_live_usage_debug,_run_usage
+from collectors import parse_codex,parse_claude,collect_claude,CollectionError,percent,alias,_confirmed_live_usage_debug,_run_usage,resolve_codex_executable,collect_codex
+from codex_resolver import resolve_codex_path
 
 CONFIG={'identitySalt':'local-test-only','dataDir':'.','claudePath':'fake'}
 AUTH={'loggedIn':True,'authMethod':'claude.ai','apiProvider':'firstParty','email':'fixture@example.test','orgId':'org-fixture','subscriptionType':'max'}
@@ -108,5 +109,56 @@ class CollectorsTest(unittest.TestCase):
     def test_bad_numeric_values(self):
         for v in (None,True,'0',float('nan'),-1,101):self.assertIsNone(percent(v))
         self.assertEqual(percent(0),0)
+    def test_codex_executable_reloads_rotated_app_path_from_toml(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d); old=root/'old.exe'; current=root/'current.exe'
+            old.write_bytes(b'old');current.write_bytes(b'current')
+            toml=root/'config.toml';toml.write_text('CODEX_CLI_PATH = "'+str(old).replace('\\','\\\\')+'"\n[mcp_servers.node_repl.env]\nCODEX_CLI_PATH = "'+str(current).replace('\\','\\\\')+'"\nOTHER_SECRET = "must not be used or returned"\n',encoding='utf-8')
+            with patch.dict('os.environ',{},clear=True):
+                self.assertEqual(current.resolve(),resolve_codex_executable({'codexPath':str(old)},toml))
+                newer=root/'newer.exe';newer.write_bytes(b'newer')
+                toml.write_text('CODEX_CLI_PATH = "'+str(old).replace('\\','\\\\')+'"\n[mcp_servers.node_repl.env]\nCODEX_CLI_PATH = "'+str(newer).replace('\\','\\\\')+'"\nOTHER_SECRET = "must not be used or returned"\n',encoding='utf-8')
+                self.assertEqual(newer.resolve(),resolve_codex_executable({'codexPath':str(old)},toml))
+    def test_codex_executable_environment_wins_without_leaking_settings(self):
+        with tempfile.TemporaryDirectory() as d:
+            env=Path(d)/'env.exe';pinned=Path(d)/'pinned.exe';env.write_bytes(b'e');pinned.write_bytes(b'p')
+            with patch.dict('os.environ',{'CODEX_CLI_PATH':str(env)}):
+                self.assertEqual(env.resolve(),resolve_codex_executable({'codexPath':str(pinned)},Path(d)/'missing.toml'))
+    def test_codex_collection_reloads_config_path_without_restart(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);one=root/'one.exe';two=root/'two.exe';one.write_bytes(b'1');two.write_bytes(b'2')
+            settings=root/'.codex'/'config.toml';settings.parent.mkdir();
+            captured=[]
+            class FakeRpc:
+                def __init__(self,path,cwd):captured.append(Path(path));self.reads=0
+                def call(self,method,params):
+                    if method=='account/read':return {'account':{'type':'chatgpt','planType':'pro'}}
+                    if method=='account/rateLimits/read':return {'accountId':'fixture-account','rateLimitsByLimitId':{'codex':{'limitId':'codex','primary':{'usedPercent':4,'windowDurationMins':10080}}}}
+                    return {}
+                def send(self,payload):pass
+                def close(self):pass
+            config={'codexPath':str(root/'missing.exe'),'dataDir':d,'identitySalt':'local-test'}
+            with patch.dict('os.environ',{},clear=True),patch('collectors.Path.home',return_value=root),patch('collectors.Rpc',FakeRpc):
+                for binary in (one,two):
+                    settings.write_text('CODEX_CLI_PATH = "'+str(binary).replace('\\','\\\\')+'"\n',encoding='utf-8')
+                    self.assertEqual('fresh',collect_codex(config)['status'])
+            self.assertEqual([one.resolve(),two.resolve()],captured)
+    def test_official_install_fallback_works_when_pins_are_stale(self):
+        with tempfile.TemporaryDirectory() as d:
+            app=Path(d)/'AppData/Local/OpenAI/Codex/bin/fallback';app.mkdir(parents=True)
+            binary=app/'codex.exe';binary.write_bytes(b'fixture')
+            with patch.dict('os.environ',{},clear=True),patch('codex_resolver.Path.home',return_value=Path(d)),patch('codex_resolver._reported_version',return_value=(1,2,3,(1,()))):
+                self.assertEqual(binary.resolve(),resolve_codex_executable({'codexPath':str(Path(d)/'stale.exe')},Path(d)/'missing.toml'))
+    def test_official_fallback_chooses_highest_reported_version(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d); low=root/'OpenAI/Codex/bin/900/codex.exe'; high=root/'OpenAI/Codex/bin/100/codex.exe'
+            low.parent.mkdir(parents=True);high.parent.mkdir(parents=True);low.write_bytes(b'l');high.write_bytes(b'h')
+            versions={low:(1,9,0,(1,())),high:(2,0,0,(1,()))}
+            with patch.dict('os.environ',{},clear=True),patch('codex_resolver._reported_version',side_effect=lambda p,timeout=2:versions[Path(p)]):
+                self.assertEqual(high.resolve(),resolve_codex_path(Path(root/'missing.toml'),local_appdata=root))
+    def test_codex_missing_executable_has_safe_actionable_reason(self):
+        with tempfile.TemporaryDirectory() as d,patch.dict('os.environ',{},clear=True),patch('collectors.Path.home',return_value=Path(d)):
+            a=collect_codex({'codexPath':str(Path(d)/'missing.exe'),'dataDir':d})
+        self.assertEqual('error',a['status']);self.assertEqual('codex_executable_unavailable',a['reason'])
 
 if __name__=='__main__':unittest.main()

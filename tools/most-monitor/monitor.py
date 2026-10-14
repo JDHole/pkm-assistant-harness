@@ -8,21 +8,30 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 from core import MonitorCore
 
+PROVIDERS=('codex','claude')
+
+def enabled_providers(config):
+    value=config.get('enabledProviders',list(PROVIDERS))
+    if not isinstance(value,list) or not value or any(not isinstance(x,str) or x not in PROVIDERS for x in value) or len(set(value)) != len(value):
+        raise ValueError('enabledProviders must be a non-empty list of supported providers')
+    return tuple(value)
+
 class Service:
     def __init__(self, config, collectors=None, notifier=None):
         self.config = config
+        self.enabled_providers = enabled_providers(config)
         if notifier is None and config.get("notifications", True):
             try:
                 import notifier as notifier_module
                 notifier = notifier_module
             except ImportError:
                 notifier = None
-        self.core = MonitorCore(config["dataDir"], host_id=config.get('hostId'), notifier=notifier, snapshot_path=config.get('snapshotPath'))
+        self.core = MonitorCore(config["dataDir"], host_id=config.get('hostId'), notifier=notifier, snapshot_path=config.get('snapshotPath'), enabled_providers=self.enabled_providers)
         self.collectors = collectors; self.last_refresh = 0.; self.refreshing = None; self.guard = threading.Lock(); self.failures = 0
         self.cooldown = {}; self.account_cache = {}; self.attempted = {}; self.delivery_thread = None
-        self.stop_event = threading.Event(); self.poll_thread = None
+        self.stop_event = threading.Event(); self.poll_thread = None; self.refresh_thread = None; self.stopping = False
+        self.agy_usage_last_good = None
     def start_polling(self):
-        if self.poll_thread: return
         def loop():
             while not self.stop_event.is_set():
                 try: self.refresh()
@@ -30,28 +39,59 @@ class Service:
                 base = max(60, int(self.config.get("pollSeconds", 300)))
                 delay = base * random.uniform(.9, 1.0)
                 self.stop_event.wait(delay)
-        self.poll_thread = threading.Thread(target=loop, name="most-monitor-poll", daemon=True); self.poll_thread.start()
-    def stop(self):
-        self.stop_event.set()
-        if self.poll_thread: self.poll_thread.join(timeout=45)
-        if self.delivery_thread: self.delivery_thread.join(timeout=30)
+        with self.guard:
+            if self.poll_thread or self.stopping: return
+            self.poll_thread = threading.Thread(target=loop, name="most-monitor-poll", daemon=True)
+            self.poll_thread.start()
+    def stop(self, timeout=45):
+        deadline = time.monotonic() + max(0, timeout)
+        with self.guard:
+            self.stopping = True
+            self.stop_event.set()
+            poll_thread = self.poll_thread
+        def join_before_deadline(thread):
+            if thread and thread is not threading.current_thread():
+                thread.join(timeout=max(0, deadline - time.monotonic()))
+        join_before_deadline(poll_thread)
+        if poll_thread and poll_thread.is_alive():
+            return False
+        with self.guard:
+            refresh_thread = self.refresh_thread
+        join_before_deadline(refresh_thread)
+        if refresh_thread and refresh_thread.is_alive():
+            return False
+        # _refresh can start delivery immediately before it exits, so inspect
+        # the delivery worker only after the refresh worker has been joined.
+        with self.guard:
+            delivery_thread = self.delivery_thread
+        join_before_deadline(delivery_thread)
+        return not any(thread and thread.is_alive() for thread in
+                       (poll_thread, refresh_thread, delivery_thread))
     def refresh(self, max_age=0):
         with self.guard:
+            if self.stopping:
+                raise RuntimeError('monitor is stopping')
             if self.refreshing: future = self.refreshing
-            elif time.time() - self.last_refresh < 5: return self.core.snapshot()
+            elif time.time() - self.last_refresh < 5: return self._visible_snapshot(self.core.snapshot())
             else:
                 future = concurrent.futures.Future(); self.refreshing = future
-                threading.Thread(target=self._refresh, args=(future,max_age), daemon=True).start()
+                self.refresh_thread = threading.Thread(target=self._refresh, args=(future,max_age), name="most-monitor-refresh", daemon=True)
+                self.refresh_thread.start()
         return future.result(timeout=45)
     def _refresh(self, future, max_age=0):
         try:
             if self.collectors is None:
                 import collectors as c
-                funcs = [lambda: c.collect_codex(self.config), lambda: c.collect_claude(self.config)]
-            else: funcs = list(self.collectors)
+                funcs = {'codex': lambda: c.collect_codex(self.config), 'claude': lambda: c.collect_claude(self.config)}
+            elif isinstance(self.collectors, dict):
+                funcs = self.collectors
+            else:
+                # Preserve the original positional injection contract: slot 0
+                # is Codex and slot 1 is Claude, even for provider subsets.
+                funcs = dict(zip(PROVIDERS, self.collectors))
+            collector_map = {provider: fn for provider, fn in funcs.items() if provider in self.enabled_providers}
             # Collector subprocess deadlines provide the hard stop; provider failures are isolated.
-            def collect(index, fn):
-                provider = ('codex', 'claude')[index] if index < 2 else str(index)
+            def collect(provider, fn):
                 cached = self.account_cache.get(provider)
                 if max_age and cached and cached.get('status') == 'fresh' and time.time() - (cached.get('observedAt') or 0) < max_age and time.time() < (cached.get('validUntil') or 0):
                     return cached
@@ -69,10 +109,10 @@ class Service:
                     delay = min(3600, max(60, old_delay * 2))
                     account['retrySeconds'] = delay; self.cooldown[provider] = time.time() + delay; self.account_cache[provider] = account
                 return account
-            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex:
-                futures = [ex.submit(collect, i, fn) for i, fn in enumerate(funcs)]
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, min(2, len(collector_map)))) as ex:
+                futures = [ex.submit(collect, provider, fn) for provider, fn in collector_map.items()]
                 accounts = [f.result(timeout=40) for f in futures]
-            result=self.core.ingest(accounts); self.last_refresh=time.time(); self.failures=0; future.set_result(result)
+            result=self.core.ingest(accounts); self.last_refresh=time.time(); self.failures=0; future.set_result(self._visible_snapshot(result))
             if not self.delivery_thread or not self.delivery_thread.is_alive():
                 self.delivery_thread = threading.Thread(target=self.core.deliver_pending, daemon=True); self.delivery_thread.start()
         except Exception as exc:
@@ -80,18 +120,67 @@ class Service:
         finally:
             with self.guard: self.refreshing=None
     def usage(self, max_age=300, **filters):
-        max_age=max(0, min(int(max_age), 3600)); s=self.core.snapshot(**filters)
+        max_age=max(0, min(int(max_age), 3600)); s=self._visible_snapshot(self.core.snapshot(**filters))
         now = time.time()
         needs = s is None or not s['accounts'] or any(a.get('status') != 'fresh' or now - (a.get('observedAt') or 0) > max_age for a in s['accounts'])
         if needs and (s is None or now-self.last_refresh >= 5): self.refresh(max_age)
-        s = self.core.snapshot(**filters)
+        s = self._visible_snapshot(self.core.snapshot(**filters))
         if s:
             s['maxAgeSatisfied'] = bool(s['accounts']) and all(a.get('status') == 'fresh' and time.time()-(a.get('observedAt') or 0) <= max_age for a in s['accounts'])
+            if filters.get('provider') in (None, 'antigravity'):
+                s['agyUsage'] = self._agy_usage()
         return s
+
+    def _agy_usage(self):
+        """Attach measured AGY tokens and independent quota cache observations."""
+        path = self.config.get('agyUsageModule', str(Path.home() / 'Desktop' / 'brygada-agy' / 'usage_export.py'))
+        data_dir = self.config.get('agyDataDir', str(Path.home() / '.antigravity_tools'))
+        try:
+            module_path = Path(path)
+            if not module_path.is_absolute() or not module_path.is_file():
+                raise ValueError('AGY reader unavailable')
+            spec = importlib.util.spec_from_file_location('brygada_usage_export', module_path)
+            if spec is None or spec.loader is None:
+                raise ValueError('AGY reader unavailable')
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            value = module.summary_for_day(data_dir)
+            if not isinstance(value, dict) or value.get('status') != 'ok':
+                raise ValueError('AGY reader returned no measurements')
+            try:
+                quota_path = module_path.with_name('quota_export.py')
+                quota_spec = importlib.util.spec_from_file_location('brygada_quota_export', quota_path)
+                if quota_spec is None or quota_spec.loader is None:
+                    raise ValueError('AGY quota reader unavailable')
+                quota_module = importlib.util.module_from_spec(quota_spec)
+                quota_spec.loader.exec_module(quota_module)
+                value['quotas'] = quota_module.read_quotas(data_dir)
+            except Exception:
+                value['quotas'] = {'status': 'error', 'reason': 'account_source_unavailable',
+                                   'accounts': []}
+            self.agy_usage_last_good = value
+            return value
+        except Exception:
+            if self.agy_usage_last_good is not None:
+                return {**self.agy_usage_last_good, 'status': 'stale',
+                        'reason': 'agy_source_unavailable'}
+            return {'status': 'error', 'reason': 'agy_source_unavailable',
+                    'limits': None, 'actualCost': None}
+
+    def _visible_snapshot(self,snapshot):
+        if snapshot is None:return None
+        snapshot['accounts']=[a for a in snapshot.get('accounts',[]) if isinstance(a,dict) and a.get('provider') in self.enabled_providers]
+        snapshot['alerts']=[a for a in snapshot.get('alerts',[]) if isinstance(a,dict) and a.get('provider') in self.enabled_providers]
+        states=[a.get('status') for a in snapshot['accounts']]
+        snapshot['status']='fresh' if states and all(x=='fresh' for x in states) else 'partial' if 'fresh' in states else 'stale' if 'stale' in states else 'error'
+        snapshot['validUntil']=min((a.get('validUntil') for a in snapshot['accounts'] if isinstance(a.get('validUntil'),(int,float))),default=None)
+        return snapshot
 
 def load_config(path=None):
     path=Path(path or Path(__file__).with_name("config.json")); data=json.loads(path.read_text(encoding="utf-8"))
     data.setdefault("port",1236); data.setdefault("pollSeconds",300); data.setdefault("notifications",True)
+    data.setdefault('enabledProviders',list(PROVIDERS))
+    enabled_providers(data)
     if not data.get("dataDir"): raise ValueError("dataDir is required")
     return data
 
@@ -107,6 +196,7 @@ def _handler(service):
    if not self._guard(): return self._send(403,{"error":"local client required"})
    p=urlparse(self.path); q=parse_qs(p.query)
    try:
+    if p.path=="/most/v1/health": return self._send(200,{"ok":True,"service":"most-monitor"})
     if p.path=="/most/v1/usage": return self._send(200,service.usage(q.get("maxAge",[300])[0],provider=q.get("provider",[None])[0],account_ref=q.get("accountRef",[None])[0],host_id=q.get("hostId",[None])[0]))
     if p.path=="/most/v1/history": return self._send(200,{"history":service.core.history(q.get("limit",[200])[0])})
     if p.path=="/most/v1/routing-status": return self._send(200,{"usage_status":"available","recommend_model":"unsupported"})
@@ -115,7 +205,12 @@ def _handler(service):
    except Exception: return self._send(503,{"error":"unavailable"})
   def do_POST(self):
    if not self._guard(): return self._send(403,{"error":"local client required"})
-   if urlparse(self.path).path!="/most/v1/refresh": return self._send(404,{"error":"not found"})
+   path=urlparse(self.path).path
+   if path=="/most/v1/shutdown":
+    self._send(202,{"ok":True,"service":"most-monitor"})
+    threading.Thread(target=self.server.shutdown,daemon=True).start()
+    return
+   if path!="/most/v1/refresh": return self._send(404,{"error":"not found"})
    try: return self._send(200,service.refresh())
    except Exception: return self._send(503,{"error":"unavailable"})
  return Handler
@@ -138,7 +233,10 @@ def main(argv=None):
   except Exception: server.server_close(); raise
   server.RequestHandlerClass=_handler(service); service.start_polling(); logging.info('monitor_started port=%s',config['port'])
   try: server.serve_forever()
-  finally: service.stop(); server.server_close(); service.core.close()
+  finally:
+   while not service.stop(timeout=45):
+    logging.warning('monitor_shutdown_waiting_for_workers')
+   server.server_close(); service.core.close()
   return 0
  # CLI deliberately does not collect: it must talk to the running daemon.
  import urllib.request
