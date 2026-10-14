@@ -30,6 +30,7 @@ class Service:
         self.collectors = collectors; self.last_refresh = 0.; self.refreshing = None; self.guard = threading.Lock(); self.failures = 0
         self.cooldown = {}; self.account_cache = {}; self.attempted = {}; self.delivery_thread = None
         self.stop_event = threading.Event(); self.poll_thread = None; self.refresh_thread = None; self.stopping = False
+        self.agy_usage_last_good = None
     def start_polling(self):
         def loop():
             while not self.stop_event.is_set():
@@ -126,7 +127,45 @@ class Service:
         s = self._visible_snapshot(self.core.snapshot(**filters))
         if s:
             s['maxAgeSatisfied'] = bool(s['accounts']) and all(a.get('status') == 'fresh' and time.time()-(a.get('observedAt') or 0) <= max_age for a in s['accounts'])
+            if filters.get('provider') in (None, 'antigravity'):
+                s['agyUsage'] = self._agy_usage()
         return s
+
+    def _agy_usage(self):
+        """Attach measured AGY tokens and independent quota cache observations."""
+        path = self.config.get('agyUsageModule', str(Path.home() / 'Desktop' / 'brygada-agy' / 'usage_export.py'))
+        data_dir = self.config.get('agyDataDir', str(Path.home() / '.antigravity_tools'))
+        try:
+            module_path = Path(path)
+            if not module_path.is_absolute() or not module_path.is_file():
+                raise ValueError('AGY reader unavailable')
+            spec = importlib.util.spec_from_file_location('brygada_usage_export', module_path)
+            if spec is None or spec.loader is None:
+                raise ValueError('AGY reader unavailable')
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            value = module.summary_for_day(data_dir)
+            if not isinstance(value, dict) or value.get('status') != 'ok':
+                raise ValueError('AGY reader returned no measurements')
+            try:
+                quota_path = module_path.with_name('quota_export.py')
+                quota_spec = importlib.util.spec_from_file_location('brygada_quota_export', quota_path)
+                if quota_spec is None or quota_spec.loader is None:
+                    raise ValueError('AGY quota reader unavailable')
+                quota_module = importlib.util.module_from_spec(quota_spec)
+                quota_spec.loader.exec_module(quota_module)
+                value['quotas'] = quota_module.read_quotas(data_dir)
+            except Exception:
+                value['quotas'] = {'status': 'error', 'reason': 'account_source_unavailable',
+                                   'accounts': []}
+            self.agy_usage_last_good = value
+            return value
+        except Exception:
+            if self.agy_usage_last_good is not None:
+                return {**self.agy_usage_last_good, 'status': 'stale',
+                        'reason': 'agy_source_unavailable'}
+            return {'status': 'error', 'reason': 'agy_source_unavailable',
+                    'limits': None, 'actualCost': None}
 
     def _visible_snapshot(self,snapshot):
         if snapshot is None:return None
