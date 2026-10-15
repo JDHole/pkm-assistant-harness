@@ -180,7 +180,7 @@
     cursor: pointer;
     display: grid;
     grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: minmax(0, 1fr);
+    grid-template-rows: repeat(2, minmax(0, 1fr));
     align-content: center;
     font: inherit;
     gap: 0;
@@ -205,6 +205,17 @@
     white-space: nowrap;
 }
 .most-usage-tile > span { display: none; }
+.most-usage-tile > .most-usage-tile-agy {
+    display: block;
+    grid-column: 1;
+    grid-row: 2;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--most-bronze);
+    font-size: .82em;
+}
 .most-usage-tile > .most-usage-progress { display: none; }
 .most-usage-tile:focus-visible,
 .most-status:focus-visible,

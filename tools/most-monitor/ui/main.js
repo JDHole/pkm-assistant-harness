@@ -204,6 +204,64 @@ function renderHistory(parent, rows, snapshot) {
     });
 }
 
+// AGY view (09.10), first written straight into the deployed bundle; source of truth here since 15.10.
+function agyTokenText(value) {
+    return finite(value) ? `${Math.round(value).toLocaleString('pl-PL')} tokenów` : 'brak pomiaru';
+}
+
+function agyTileText(agy) {
+    if (!agy || agy.status === 'unconfigured') return 'AGY: odczyt niepodłączony';
+    if (agy.status === 'error') return 'AGY: błąd odczytu tokenów';
+    const total = agy.totals && agy.totals.total;
+    const suffix = agy.status === 'stale' ? ' · ostatni zapis' : '';
+    const quotaAccounts = agy.quotas && Array.isArray(agy.quotas.accounts) ? agy.quotas.accounts : [];
+    const fresh = quotaAccounts.filter((account) => account.status === 'fresh').length;
+    const limitText = quotaAccounts.length ? `limity ${fresh}/${quotaAccounts.length} świeże` : 'limity: brak odczytu';
+    const dayText = agy.status === 'stale' ? `AGY ${agy.day || 'poprzedni odczyt'}` : 'AGY dziś';
+    return `${dayText}: ${agyTokenText(total)}${suffix} · ${limitText}`;
+}
+
+function renderAgyUsage(parent, agy) {
+    const section = create(parent, 'section', 'most-usage-section most-usage-agy');
+    create(section, 'h3', '', 'AGY / Antigravity');
+    create(section, 'p', agy && agy.status === 'ok' ? 'most-usage-status' : 'most-usage-error', agyTileText(agy));
+    if (!agy || agy.status === 'error' || agy.status === 'unconfigured') return;
+    create(section, 'p', 'most-usage-meta', `Dzień: ${agy.day || 'nieznany'} (Europe/Berlin) · odczyt: ${dateTime(agy.readAt)} · źródło: główna baza Antigravity Tools`);
+    create(section, 'p', 'most-usage-meta', `Ostatnie zmierzone żądanie: ${dateTime(agy.lastEventAt)} · ${agy.completeness === 'partial' ? 'częściowe dane tokenów' : 'zapisane żądania'}`);
+    create(section, 'p', 'most-usage-scope', 'Tokeny i limity pochodzą z osobnych pomiarów. Faktyczna opłata API: brak danych. Tokenów nie przeliczamy na procent limitu.');
+    const totals = agy.totals || {};
+    create(section, 'p', 'most-usage-value', `Razem: ${agyTokenText(totals.total)} · wejście ${agyTokenText(totals.input)} · wyjście ${agyTokenText(totals.output)} · cache ${agyTokenText(totals.cached)} (część wejścia)`);
+    const accounts = Array.isArray(agy.accounts) ? agy.accounts : [];
+    if (!accounts.length) create(section, 'p', 'most-usage-empty', 'Brak zmierzonych żądań AGY dzisiaj.');
+    accounts.forEach((account) => {
+        const card = create(section, 'div', 'most-usage-window');
+        create(card, 'strong', '', `Konto ${account.accountAlias || 'nieznane'}`);
+        create(card, 'span', 'most-usage-value', agyTokenText(account.totals && account.totals.total));
+        create(card, 'small', 'most-usage-scope', `Modele: ${Array.isArray(account.models) && account.models.length ? account.models.join(', ') : 'brak danych'}`);
+        create(card, 'small', 'most-usage-time', `Żądania: ${finite(account.requests) ? account.requests : '?'}`);
+    });
+    const quota = agy.quotas;
+    if (!quota || quota.status === 'error') {
+        create(section, 'p', 'most-usage-error', 'Limity AGY: brak odczytu z kont Antigravity Tools.');
+    } else {
+        (quota.accounts || []).forEach((account) => {
+            const card = create(section, 'section', 'most-usage-account');
+            create(card, 'h4', '', `Konto ${account.accountAlias || 'nieznane'} · limity ${account.status === 'fresh' ? 'świeże' : 'nieświeże'}`);
+            create(card, 'p', 'most-usage-observed', `${ageText(account.observedAt, Date.now() / 1000)} · obserwacja ${dateTime(account.observedAt)}`);
+            if (account.disabled || account.proxyDisabled || account.validationBlocked || account.status === 'forbidden')
+                create(card, 'p', 'most-usage-error', 'Konto ma ograniczoną dostępność w puli.');
+            (account.buckets || []).forEach((bucket) => {
+                create(card, 'p', 'most-usage-value', `${bucket.group || 'Pula'} · ${bucket.label || bucket.bucketId}: ${percent(bucket.remainingPercent) || 'brak'} pozostało · ${resetText(bucket.resetsAt)}`);
+            });
+            const models = create(card, 'details', 'most-usage-models');
+            create(models, 'summary', '', `Limity modeli (${(account.models || []).length})`);
+            (account.models || []).forEach((model) => {
+                create(models, 'p', 'most-usage-scope', `${model.displayName || model.model}: ${percent(model.remainingPercent) || 'brak'} pozostało · ${resetText(model.resetsAt)}`);
+            });
+        });
+    }
+}
+
 class UsageModal extends Modal {
     constructor(app, plugin) {
         super(app);
@@ -267,6 +325,7 @@ class UsageModal extends Modal {
             if (!rows.length) create(card, 'p', 'most-usage-empty', 'Brak okien użycia w tym odczycie.');
             rows.forEach((row) => renderWindow(card, account, row, now, error));
         });
+        renderAgyUsage(body, snapshot.agyUsage);
         const alerts = create(body, 'section', 'most-usage-section');
         create(alerts, 'h3', '', 'Ostatnie alerty');
         const items = Array.isArray(snapshot.alerts) ? snapshot.alerts.filter((alert) => alert.provider === 'codex') : [];
@@ -411,6 +470,7 @@ class MostStatusPlugin extends Plugin {
             create(root, 'strong', '', snapshot
                 ? usageStatusText(snapshot, Date.now() / 1000, error) || 'Użycie subskrypcji'
                 : error ? 'Codex/Work: błąd monitora' : 'Czekam na Codex/Work');
+            create(root, 'span', 'most-usage-tile-agy', agyTileText(snapshot && snapshot.agyUsage));
             if (error) create(root, 'span', 'most-usage-tile-error', `błąd: ${error}`);
             if (!snapshot) {
                 root.setAttribute('title', error ? `Błąd monitora: ${error}` : 'Czekam na lokalny monitor Codex/Work');

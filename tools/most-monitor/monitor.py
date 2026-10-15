@@ -160,7 +160,8 @@ class Service:
             with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, min(3, len(collector_map)))) as ex:
                 futures = [ex.submit(collect, provider, fn) for provider, fn in collector_map.items()]
                 accounts = [f.result(timeout=40) for f in futures]
-            result=self.core.ingest(accounts); self.last_refresh=time.time(); self.failures=0; future.set_result(self._visible_snapshot(result))
+            # AGY accounts reach the synced file only with monitor-salted aliases.
+            result=self.core.ingest(accounts, extra={'agyUsage': self._agy_record(self._agy_usage())}); self.last_refresh=time.time(); self.failures=0; future.set_result(self._visible_snapshot(result))
             if not self.delivery_thread or not self.delivery_thread.is_alive():
                 self.delivery_thread = threading.Thread(target=self.core.deliver_pending, daemon=True); self.delivery_thread.start()
         except Exception as exc:
@@ -187,7 +188,45 @@ class Service:
             s['maxAgeSatisfied'] = bool(s['accounts']) and all(a.get('status') == 'fresh' and time.time()-(a.get('observedAt') or 0) <= max_age for a in s['accounts'])
             if filters.get('provider') in (None, 'antigravity'):
                 s['agyUsage'] = self._agy_usage()
+            else:
+                s.pop('agyUsage', None)
         return s
+
+    @staticmethod
+    def _agy_record(value):
+        """Stored and exported copy of AGY. Its account status is frozen once written, and
+        unlike accounts[] it has no validUntil a reader could expire, so the record never
+        says fresh: only a live HTTP read confirms AGY freshness."""
+        # An odd AGY value must cost only the AGY record, never the whole collector round.
+        try:
+            record = json.loads(json.dumps(value))
+            if not isinstance(record, dict): raise ValueError('AGY value is not an object')
+            quotas = record.get('quotas')
+            accounts = quotas.get('accounts') if isinstance(quotas, dict) else None
+            for account in accounts if isinstance(accounts, list) else []:
+                if isinstance(account, dict) and account.get('status') == 'fresh': account['status'] = 'stale'
+        except (TypeError, ValueError):
+            record = {'status': 'error', 'reason': 'agy_record_failed', 'limits': None, 'actualCost': None}
+        record['freshness'] = 'live_only'
+        return record
+
+    def _private_agy(self, value):
+        """Brygada's accountAlias is an unsalted email hash, guessable offline from a synced
+        file. Replace it with a monitor-salted alias and drop any email field outright."""
+        salt = self.config.get('identitySalt')
+        def walk(node):
+            if isinstance(node, dict):
+                out = {}
+                for key, item in node.items():
+                    if key in ('email', 'account_email', 'accountEmail'): continue
+                    if key == 'accountAlias':
+                        out[key] = ('google-' + hashlib.sha256((salt + '\0' + item).encode()).hexdigest()[:20]
+                                    if isinstance(salt, str) and salt and isinstance(item, str) and item else None)
+                    else: out[key] = walk(item)
+                return out
+            if isinstance(node, list): return [walk(item) for item in node]
+            return node
+        return walk(value)
 
     def _agy_usage(self):
         """Attach measured AGY tokens and independent quota cache observations."""
@@ -216,6 +255,7 @@ class Service:
             except Exception:
                 value['quotas'] = {'status': 'error', 'reason': 'account_source_unavailable',
                                    'accounts': []}
+            value = self._private_agy(value)
             self.agy_usage_last_good = value
             return value
         except Exception:

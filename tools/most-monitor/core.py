@@ -177,8 +177,9 @@ class MonitorCore:
         self.db.execute('INSERT OR REPLACE INTO state VALUES(?,?)', (key, _json(s)))
         return s['id'], duplicate
 
-    def ingest(self, accounts, now=None):
-        """Persist a successful collector round. Error accounts inherit prior windows."""
+    def ingest(self, accounts, now=None, extra=None):
+        """Persist a successful collector round. Error accounts inherit prior windows.
+        `extra` adds already-sanitized top-level sections (AGY) to the stored snapshot."""
         now = float(time.time() if now is None else now)
         with self.lock:
             old = self._load_raw() or {"accounts": []}
@@ -209,6 +210,8 @@ class MonitorCore:
               "validUntil": min((a.get("validUntil") for a in result if self._valid_number(a.get("validUntil"))), default=None),
               "status": "fresh" if any(a.get("status") == "fresh" for a in result) else "error",
               "accounts": result, "alerts": [], "notificationStatus": "not_configured"}
+            for key, value in (extra or {}).items():
+                if key not in snapshot: snapshot[key] = _clean(value)
             snapshot["alerts"] = self._new_alerts(snapshot, now)
             snapshot["alerts"] += self._recent_alerts()
             snapshot["alerts"] = self._dedupe_alerts(snapshot["alerts"])

@@ -155,6 +155,39 @@ class ServiceTests(unittest.TestCase):
     now=time.time();self.assertEqual('unknown',restarted.account_cache['claude']['status'])
     self.assertFalse(restarted._due('claude',0,now));self.assertTrue(restarted._due('claude',0,now+61))
    finally: restarted.stop();restarted.core.close()
+ def test_agy_aliases_are_salted_and_reach_the_synced_file(self):
+  from pathlib import Path
+  with tempfile.TemporaryDirectory() as d:
+   root=Path(d)
+   (root/'usage_export.py').write_text("def summary_for_day(data_dir):\n    return {'status':'ok','totals':{'total':5},'accounts':[{'accountAlias':'raw-usage-alias','requests':1,'totals':{'total':5}}]}\n",encoding='utf-8')
+   (root/'quota_export.py').write_text("def read_quotas(data_dir):\n    return {'status':'ok','accounts':[{'accountAlias':'raw-quota-alias','email':'fixture@example.test','status':'fresh','models':[]}]}\n",encoding='utf-8')
+   synced=root/'vault'/'subscription-usage.json'
+   config={'dataDir':str(root/'state'),'notifications':False,'enabledProviders':['codex'],'identitySalt':'local-test',
+           'agyUsageModule':str(root/'usage_export.py'),'snapshotPath':str(synced)}
+   service=Service(config,collectors={'codex':lambda:live(20)})
+   try:
+    http=service.usage(300);exported=json.loads(synced.read_text(encoding='utf-8'))
+    for body in (http,exported):
+     text=json.dumps(body['agyUsage'])
+     for secret in ('raw-usage-alias','raw-quota-alias','fixture@example.test'):self.assertNotIn(secret,text)
+     self.assertTrue(body['agyUsage']['quotas']['accounts'][0]['accountAlias'].startswith('google-'))
+    # One alias everywhere: the tab numbers Google accounts by it, from HTTP or from the file.
+    self.assertEqual(http['agyUsage']['quotas']['accounts'][0]['accountAlias'],exported['agyUsage']['quotas']['accounts'][0]['accountAlias'])
+    self.assertNotIn('agyUsage',service.usage(300,provider='codex'))
+    # Live HTTP keeps the reader's status; the stored record cannot expire, so it is never fresh.
+    self.assertEqual('fresh',http['agyUsage']['quotas']['accounts'][0]['status'])
+    self.assertEqual('stale',exported['agyUsage']['quotas']['accounts'][0]['status']);self.assertEqual('live_only',exported['agyUsage']['freshness'])
+    self.assertEqual('stale',service.core.snapshot()['agyUsage']['quotas']['accounts'][0]['status'])
+    service.config={**config,'identitySalt':None};self.assertIsNone(service._private_agy({'accountAlias':'raw'})['accountAlias'])
+   finally:
+    while service.delivery_thread and service.delivery_thread.ident is None: time.sleep(.001)
+    service.stop();service.core.close()
+ def test_agy_record_survives_odd_values(self):
+  self.assertEqual('stale',Service._agy_record({'quotas':{'accounts':[{'status':'fresh'}]}})['quotas']['accounts'][0]['status'])
+  for odd in ({'quotas':'broken'},{'quotas':{'accounts':'broken'}},['not','an','object'],{'bad':object()}):
+   record=Service._agy_record(odd)
+   self.assertIsInstance(record,dict);self.assertEqual('live_only',record['freshness'])
+  self.assertEqual('agy_record_failed',Service._agy_record({'bad':object()})['reason'])
  def test_enabled_providers_accept_deepseek_and_default_stays_two(self):
   self.assertEqual(('codex','claude','deepseek'),enabled_providers({'enabledProviders':['codex','claude','deepseek']}))
   self.assertEqual(('codex','claude'),enabled_providers({}))
