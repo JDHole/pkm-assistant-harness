@@ -14,6 +14,10 @@ except ZoneInfoNotFoundError:
         BERLIN = ZoneInfo.from_file(zone, key='Europe/Berlin')
 WEEK = 10080
 THRESHOLDS = (70, 85, 95)
+SUPPORTED_PROVIDERS = ('codex', 'claude', 'deepseek')
+# Kept from the last good read when a collection fails, so readers see old data as old.
+INHERITED_FIELDS = ("accountRef", "windows", "observedAt", "validUntil", "plan", "coverage", "authMode",
+                    "balance_infos", "is_available")
 
 def reset_epoch(value):
     return int(math.floor(value / 60 + .5)) * 60 if isinstance(value, (int, float)) and math.isfinite(value) else None
@@ -37,6 +41,13 @@ def _scope_key(scope):
     return _json(scope if isinstance(scope, dict) else {})
 
 
+def fresh_valid_until(accounts):
+    """Earliest expiry among fresh accounts. A failed account keeps its old validUntil for
+    display, but must not expire the snapshot for readers of the other providers."""
+    values = [a.get('validUntil') for a in accounts if isinstance(a, dict) and a.get('status') == 'fresh']
+    return min((v for v in values if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)), default=None)
+
+
 class MonitorCore:
     """Single-process SQLite store. All public methods are lock protected."""
     def __init__(self, data_dir, host_id=None, notifier=None, snapshot_path=None, enabled_providers=None):
@@ -48,8 +59,8 @@ class MonitorCore:
         self.host_id = host_id or 'host-' + hashlib.sha256(socket.gethostname().encode()).hexdigest()[:16]
         self.notifier = notifier
         providers=('codex','claude') if enabled_providers is None else tuple(enabled_providers)
-        if not providers or any(not isinstance(x,str) or x not in ('codex','claude') for x in providers) or len(set(providers)) != len(providers):
-            raise ValueError('enabled_providers must contain codex, claude, or both')
+        if not providers or any(not isinstance(x,str) or x not in SUPPORTED_PROVIDERS for x in providers) or len(set(providers)) != len(providers):
+            raise ValueError('enabled_providers must be a unique subset of codex, claude, deepseek')
         self.enabled_providers = frozenset(providers)
         self.lock = threading.RLock()
         self.delivery_lock = threading.Lock()
@@ -180,7 +191,7 @@ class MonitorCore:
                 if not prior and str(a.get('accountRef', '')).endswith('-unknown'):
                     prior = next((x for x in old.get('accounts', []) if x.get('provider') == a.get('provider')), None)
                 if a.get("status") in ("error", "auth_required", "unsupported", "unknown") and prior:
-                    for k in ("accountRef", "windows", "observedAt", "validUntil", "plan", "coverage", "authMode"):
+                    for k in INHERITED_FIELDS:
                         if k in prior: a[k] = prior[k]
                 a.setdefault("receivedAt", now); a.setdefault("windows", []); a.setdefault("coverage", [])
                 a = self._materialize_account(a, now)
@@ -255,6 +266,7 @@ class MonitorCore:
     def _summarize(self, s):
         states = [a.get('status') for a in s['accounts']]
         s['status'] = 'fresh' if states and all(x == 'fresh' for x in states) else 'partial' if 'fresh' in states else 'stale' if 'stale' in states else 'error'
+        s['validUntil'] = fresh_valid_until(s['accounts'])
         delivery=[]
         for row in self.db.execute('SELECT delivered,payload FROM alerts ORDER BY created_at DESC'):
             try: alert=json.loads(row['payload'])

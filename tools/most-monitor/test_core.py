@@ -102,3 +102,20 @@ class CoreTests(unittest.TestCase):
         self.assertEqual([],self.c._recent_alerts())
     def test_invalid_enabled_providers_are_rejected(self):
         with self.assertRaises(ValueError):MonitorCore(self.d.name,enabled_providers=['codex','codex'])
+    def test_failed_provider_does_not_expire_snapshot_for_fresh_codex(self):
+        self.c.close();self.c=MonitorCore(self.d.name,host_id='h',enabled_providers=['codex','deepseek'])
+        self.c.ingest([account(5),account(None,provider='deepseek',accountRef='deepseek-x',windows=[],validUntil=T+300)],T)
+        later=T+400
+        s=self.c.ingest([account(6,later),dict(provider='deepseek',accountRef='deepseek-x',status='error',reason='usage_fetch_failed',windows=[],receivedAt=later)],later)
+        # The error account keeps its old validUntil for display; the snapshot follows fresh accounts only.
+        self.assertEqual(T+300,[a for a in s['accounts'] if a['provider']=='deepseek'][0]['validUntil'])
+        self.assertEqual(later+300,s['validUntil']);self.assertEqual(later+300,self.c.snapshot(later+1)['validUntil'])
+        exported=json.loads((Path(self.d.name)/'most-snapshot.json').read_text());self.assertEqual(later+300,exported['validUntil'])
+    def test_deepseek_failure_keeps_last_balance_as_not_fresh(self):
+        self.c.close();self.c=MonitorCore(self.d.name,host_id='h',enabled_providers=['codex','deepseek'])
+        good=account(None,provider='deepseek',accountRef='deepseek-x',windows=[],is_available=True,
+            balance_infos=[{'currency':'USD','total_balance':'4.30'}])
+        self.c.ingest([good],T)
+        s=self.c.ingest([dict(provider='deepseek',accountRef='deepseek-x',status='error',reason='usage_fetch_failed',windows=[],receivedAt=T+60)],T+60)
+        a=s['accounts'][0];self.assertEqual('error',a['status']);self.assertEqual('4.30',a['balance_infos'][0]['total_balance'])
+        self.assertTrue(a['is_available']);self.assertEqual(T,a['observedAt']);self.assertEqual([],s['alerts'])

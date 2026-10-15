@@ -65,7 +65,7 @@ class InstallTests(unittest.TestCase):
         config=json.loads((self.dest/'config.json').read_text())
         self.assertEqual(['codex'],config['enabledProviders'])
         self.assertNotIn('claudePath',config)
-        self.assertFalse((self.dest/'vendor/claude-2.1.278.exe').exists())
+        self.assertFalse((self.dest/'vendor'/install_local.CLAUDE_VENDOR).exists())
     def test_no_process_restart_code(self):
         # Install only copies artifacts and emits a launcher; executing is separate.
         import inspect

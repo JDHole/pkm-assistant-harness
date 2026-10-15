@@ -11,6 +11,8 @@ import subprocess
 import tempfile
 import threading
 import time
+import urllib.error
+import urllib.request
 from datetime import datetime
 from codex_resolver import CodexBinaryMissing, resolve_codex_path
 
@@ -18,6 +20,13 @@ VERSION = '1.0.0'
 FLAGS = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
 CLAUDE_OVERRIDES = ('ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN',
     'ANTHROPIC_BASE_URL', 'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX', 'CLAUDE_CODE_USE_FOUNDRY')
+DEEPSEEK_BALANCE_URL = 'https://api.deepseek.com/user/balance'
+MONEY = re.compile(r'-?\d{1,12}(\.\d{1,8})?')
+CURRENCY = re.compile(r'[A-Z]{3}')
+LABELS = {'codex': 'Codex / Work', 'claude': 'Claude', 'deepseek': 'DeepSeek'}
+SOURCES = {'codex': 'codex-app-server', 'claude': 'claude-usage', 'deepseek': 'deepseek-balance'}
+COVERAGE = {'codex': ['Codex / Work; bez limitów zwykłych czatów ChatGPT'], 'claude': ['Claude: wszystkie okna zwrócone przez /usage'],
+    'deepseek': ['DeepSeek API: saldo konta, bez okien limitu i bez zużycia']}
 
 class CollectionError(Exception):
     """Safe fixed reason, never raw provider output (may include personal data)."""
@@ -39,10 +48,10 @@ def alias(provider, identity, config):
     return provider + '-' + hashlib.sha256((salt + '\0' + str(identity)).encode()).hexdigest()[:20]
 
 def base(provider):
-    return dict(provider=provider, accountRef=provider+'-unknown', label='Codex / Work' if provider=='codex' else 'Claude',
-        authMode='unknown', status='unknown', reason=None, source='codex-app-server' if provider=='codex' else 'claude-usage',
+    return dict(provider=provider, accountRef=provider+'-unknown', label=LABELS[provider],
+        authMode='unknown', status='unknown', reason=None, source=SOURCES[provider],
         observedAt=None, receivedAt=time.time(), validUntil=None, plan=None,
-        coverage=['Codex / Work; bez limitów zwykłych czatów ChatGPT'] if provider=='codex' else ['Claude: wszystkie okna zwrócone przez /usage'], windows=[])
+        coverage=list(COVERAGE[provider]), windows=[])
 
 def finish(account, now):
     account.update(status='fresh', reason=None, observedAt=now, receivedAt=now,
@@ -149,8 +158,10 @@ def resolve_codex_executable(config, config_path=None):
 def _run(args, config, deadline):
     left=deadline-time.monotonic()
     if left<=0:raise CollectionError('timeout')
+    # The pinned monitor binary must never install or update a user-facing Claude CLI.
+    env={**os.environ,'DISABLE_AUTOUPDATER':'1'}
     r=subprocess.run([str(config['claudePath']),*args],cwd=config['dataDir'],capture_output=True,text=True,
-        encoding='utf-8',errors='replace',timeout=left,creationflags=FLAGS)
+        encoding='utf-8',errors='replace',timeout=left,creationflags=FLAGS,env=env)
     if r.returncode:raise CollectionError('client_exited')
     return r.stdout
 
@@ -167,6 +178,8 @@ def _confirmed_live_usage_debug(raw):
 def _run_usage(config, deadline):
     # Claude 2.1.278 can attach cached rows even when every network request fails.
     # A unique debug log lets us require the current invocation's endpoint HTTP 200.
+    # The CLI also skips the request while its shared on-disk usage cache is younger than
+    # about 60 s (2.1.278 and 2.1.299); such a run fails closed and the service retries later.
     fd,path=tempfile.mkstemp(prefix='claude-usage-',suffix='.log',dir=config['dataDir'])
     os.close(fd)
     try:
@@ -240,4 +253,72 @@ def collect_claude(config):
         after=json.loads(_run(['auth','status','--json'],config,deadline))
         if any(auth.get(k)!=after.get(k) for k in ('loggedIn','email','orgId','authMethod','apiProvider','subscriptionType')):raise CollectionError('account_changed_during_read')
         return parse_claude(events,auth,config,time.time(),live_confirmed=True)
+    except Exception as exc:return error(a,exc)
+
+def _deepseek_key(config):
+    """Process env first, then one named variable from an existing local dotenv; the key is never copied."""
+    var=config.get('deepseekKeyVar') or 'DEEPSEEK_API_KEY'
+    key=os.environ.get(var)
+    if not key and config.get('deepseekKeyFile'):
+        try:text=Path(config['deepseekKeyFile']).read_text(encoding='utf-8-sig')
+        except OSError:raise CollectionError('deepseek_key_unavailable') from None
+        for raw in text.splitlines():
+            m=re.match(r'^\s*(?:export\s+)?'+re.escape(var)+r'\s*=\s*(.*)$',raw)
+            if not m:continue
+            value=m.group(1).strip()
+            quoted=re.fullmatch(r'(["\'])(.*)\1\s*(?:#.*)?',value)
+            value=quoted.group(2) if quoted else re.sub(r'\s+#.*$','',value).strip()
+            key=value
+    if not key:raise CollectionError('deepseek_key_unavailable')
+    return key
+
+def parse_deepseek(payload, key, config, now):
+    a=base('deepseek')
+    # The balance API exposes no account id; a salted hash of the key separates accounts without disclosing it.
+    a.update(accountRef=alias('deepseek',key,config),authMode='api_key')
+    if not isinstance(payload,dict) or not isinstance(payload.get('is_available'),bool) or not isinstance(payload.get('balance_infos'),list):
+        raise CollectionError('balance_shape_unexpected')
+    infos=[]
+    for raw in payload['balance_infos']:
+        if not isinstance(raw,dict) or not isinstance(raw.get('currency'),str) or not CURRENCY.fullmatch(raw['currency']):
+            raise CollectionError('balance_shape_unexpected')
+        row={'currency':raw['currency']}
+        # Amounts stay provider text: no float rounding of money.
+        for k in ('total_balance','granted_balance','topped_up_balance'):
+            v=raw.get(k)
+            if v is None:continue
+            if not isinstance(v,str) or not MONEY.fullmatch(v):raise CollectionError('balance_shape_unexpected')
+            row[k]=v
+        if 'total_balance' not in row:raise CollectionError('balance_shape_unexpected')
+        infos.append(row)
+    a.update(is_available=payload['is_available'],balance_infos=infos,status='fresh',reason=None,
+        observedAt=now,receivedAt=now,validUntil=now+300)
+    return a
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    # urllib copies Authorization to a redirect target; the key may only go to DeepSeek.
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+_DEEPSEEK_OPENER=urllib.request.build_opener(_NoRedirect)
+
+def _http_get(req):
+    # Socket timeout per step (connect, TLS, read) keeps the round inside the 40 s bound.
+    with _DEEPSEEK_OPENER.open(req,timeout=10) as r:return r.read(65536)
+
+def collect_deepseek(config):
+    a=base('deepseek')
+    try:
+        key=_deepseek_key(config)
+        a['accountRef']=alias('deepseek',key,config)
+        req=urllib.request.Request(DEEPSEEK_BALANCE_URL,headers={'Authorization':'Bearer '+key,'Accept':'application/json','User-Agent':'most-monitor/'+VERSION})
+        try:body=_http_get(req)
+        except urllib.error.HTTPError as exc:
+            # Never keep the exception: it references the request and its Authorization header.
+            code=exc.code
+            raise CollectionError('login_required' if code in (401,403) else 'rate_limited' if code==429 else 'usage_fetch_failed') from None
+        except (urllib.error.URLError,OSError):raise CollectionError('usage_fetch_failed') from None
+        try:payload=json.loads(body.decode('utf-8'))
+        except ValueError:raise CollectionError('balance_shape_unexpected') from None
+        return parse_deepseek(payload,key,config,time.time())
     except Exception as exc:return error(a,exc)

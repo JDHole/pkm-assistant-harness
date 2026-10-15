@@ -2,6 +2,10 @@
 import argparse,hashlib,json,os,secrets,shutil,socket,time,re
 from pathlib import Path
 
+PROVIDERS=('codex','claude','deepseek')
+# Pinned Claude CLI verified by the blocked-network and live-marker probes (15.10.2026).
+CLAUDE_VENDOR='claude-2.1.299.exe'
+
 def patch_home_cleanup(raw):
     """Move only the two known cleanup calls; preserve unrelated Home edits and bytes."""
     text=raw.decode('utf-8')
@@ -45,7 +49,7 @@ def register_notifications():
         winreg.SetValueEx(key,'DisplayName',0,winreg.REG_SZ,'Most Monitor')
         winreg.SetValueEx(key,'ShowInSettings',0,winreg.REG_DWORD,1)
 
-def install(vault, destination, codex, claude=None, pythonw=None, providers=None):
+def install(vault, destination, codex, claude=None, pythonw=None, providers=None, deepseek_key_file=None):
     src=Path(__file__).resolve().parent
     vault=Path(vault).resolve();dest=Path(destination).resolve()
     if dest == vault or vault in dest.parents or dest in vault.parents or dest == src or src in dest.parents or dest in src.parents:
@@ -61,16 +65,18 @@ def install(vault, destination, codex, claude=None, pythonw=None, providers=None
     if not isinstance(config,dict) or not isinstance(config.get('identitySalt'),str) or not re.fullmatch(r'[0-9a-fA-F]{64}',config['identitySalt']):
         raise ValueError('Existing config needs a valid private identitySalt')
     enabled=providers or config.get('enabledProviders') or ['codex']
-    if not isinstance(enabled,list) or not enabled or any(p not in ('codex','claude') for p in enabled) or len(set(enabled)) != len(enabled):
-        raise ValueError('enabledProviders must contain unique provider names: codex, claude')
+    if not isinstance(enabled,list) or not enabled or any(p not in PROVIDERS for p in enabled) or len(set(enabled)) != len(enabled):
+        raise ValueError('enabledProviders must contain unique provider names: codex, claude, deepseek')
     if 'claude' in enabled and (not claude or not Path(claude).is_file()):
         raise ValueError('Claude is enabled but its local CLI executable is missing')
     home_updates=prepare_home_updates(vault,src)
-    vendor=dest/'vendor'/'claude-2.1.278.exe'
+    vendor=dest/'vendor'/CLAUDE_VENDOR
     config.update(dataDir=str(dest/'state'),snapshotPath=str(vault/'99_System/State/subscription-usage.json'),
         codexPath=str(Path(codex).resolve()),enabledProviders=enabled,port=1236)
     if 'claude' in enabled: config['claudePath']=str(vendor)
     else: config.pop('claudePath',None)
+    # Only the path of an existing local dotenv is stored; the key itself is never copied.
+    if deepseek_key_file: config['deepseekKeyFile']=str(Path(deepseek_key_file).resolve())
     config.setdefault('pollSeconds',300);config.setdefault('notifications',True)
     config.setdefault('hostId','host-'+hashlib.sha256((config['identitySalt']+socket.gethostname()).encode()).hexdigest()[:16])
     stamp=time.strftime('%Y%m%d-%H%M%S')
@@ -87,7 +93,7 @@ def install(vault, destination, codex, claude=None, pythonw=None, providers=None
         copy(src/name,dest/name,'runtime/'+name)
     for zone in (src/'zoneinfo').rglob('*'):
         if zone.is_file():copy(zone,dest/'zoneinfo'/zone.relative_to(src/'zoneinfo'),'runtime/zoneinfo/'+str(zone.relative_to(src/'zoneinfo')))
-    if 'claude' in enabled: copy(claude,vendor,'runtime/vendor/claude-2.1.278.exe')
+    if 'claude' in enabled: copy(claude,vendor,'runtime/vendor/'+CLAUDE_VENDOR)
     if config_path.exists():
         # Local identity pepper never goes into the synced vault backup.
         shutil.copy2(config_path,dest/('config.backup-'+stamp+'.json'))
@@ -114,5 +120,5 @@ def install(vault, destination, codex, claude=None, pythonw=None, providers=None
 if __name__=='__main__':
     p=argparse.ArgumentParser();p.add_argument('--vault',required=True);p.add_argument('--destination',required=True)
     p.add_argument('--codex',required=True);p.add_argument('--claude');p.add_argument('--pythonw',required=True)
-    p.add_argument('--providers',nargs='+',choices=('codex','claude'),default=['codex'])
-    a=p.parse_args();install(a.vault,a.destination,a.codex,a.claude,a.pythonw,a.providers)
+    p.add_argument('--providers',nargs='+',choices=PROVIDERS,default=['codex']);p.add_argument('--deepseek-key-file')
+    a=p.parse_args();install(a.vault,a.destination,a.codex,a.claude,a.pythonw,a.providers,a.deepseek_key_file)

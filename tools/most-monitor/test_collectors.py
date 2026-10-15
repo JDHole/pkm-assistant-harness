@@ -1,8 +1,14 @@
-import copy,json,tempfile,unittest
+import copy,json,tempfile,threading,unittest,urllib.error
+from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import patch,MagicMock
 from collectors import parse_codex,parse_claude,collect_claude,CollectionError,percent,alias,_confirmed_live_usage_debug,_run_usage,resolve_codex_executable,collect_codex
+from collectors import _run,parse_deepseek,collect_deepseek,_deepseek_key,DEEPSEEK_BALANCE_URL
 from codex_resolver import resolve_codex_path
+
+DS_KEY='sk-fixture-not-a-real-key'
+def balance():
+    return {'is_available':True,'balance_infos':[{'currency':'USD','total_balance':'4.30','granted_balance':'0.01','topped_up_balance':'4.28'}]}
 
 CONFIG={'identitySalt':'local-test-only','dataDir':'.','claudePath':'fake'}
 AUTH={'loggedIn':True,'authMethod':'claude.ai','apiProvider':'firstParty','email':'fixture@example.test','orgId':'org-fixture','subscriptionType':'max'}
@@ -160,5 +166,56 @@ class CollectorsTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d,patch.dict('os.environ',{},clear=True),patch('collectors.Path.home',return_value=Path(d)):
             a=collect_codex({'codexPath':str(Path(d)/'missing.exe'),'dataDir':d})
         self.assertEqual('error',a['status']);self.assertEqual('codex_executable_unavailable',a['reason'])
+    def test_claude_subprocess_never_autoupdates(self):
+        with patch('collectors.subprocess.run') as run:
+            run.return_value.returncode=0;run.return_value.stdout='2.1.299 (Claude Code)'
+            _run(['--version'],CONFIG,10**12)
+        self.assertEqual('1',run.call_args.kwargs['env']['DISABLE_AUTOUPDATER'])
+    def test_deepseek_balance_text_kept_and_key_not_disclosed(self):
+        a=parse_deepseek(balance(),DS_KEY,CONFIG,1000)
+        self.assertEqual('fresh',a['status']);self.assertEqual(1300,a['validUntil']);self.assertEqual([],a['windows'])
+        self.assertEqual('4.30',a['balance_infos'][0]['total_balance']);self.assertTrue(a['is_available'])
+        self.assertNotIn(DS_KEY,json.dumps(a));self.assertTrue(a['accountRef'].startswith('deepseek-'))
+        self.assertNotEqual(a['accountRef'],parse_deepseek(balance(),DS_KEY+'x',CONFIG,1000)['accountRef'])
+    def test_deepseek_unexpected_shape_is_error_not_zero(self):
+        for change in ({'is_available':'yes'},{'balance_infos':None},{'balance_infos':[{'currency':'USD','total_balance':4.3}]},
+                       {'balance_infos':[{'currency':'usd','total_balance':'4.30'}]},{'balance_infos':[{'currency':'USD'}]}):
+            with self.assertRaisesRegex(CollectionError,'balance_shape_unexpected'):parse_deepseek({**balance(),**change},DS_KEY,CONFIG,1000)
+    def test_deepseek_key_from_dotenv_and_env_wins(self):
+        with tempfile.TemporaryDirectory() as d:
+            env=Path(d)/'.env.local';env.write_text('# local\nOTHER=1\nexport DEEPSEEK_API_KEY="from-file" \n',encoding='utf-8')
+            with patch.dict('os.environ',{},clear=True):self.assertEqual('from-file',_deepseek_key({'deepseekKeyFile':str(env)}))
+            with patch.dict('os.environ',{'DEEPSEEK_API_KEY':'from-env'},clear=True):self.assertEqual('from-env',_deepseek_key({'deepseekKeyFile':str(env)}))
+            with patch.dict('os.environ',{},clear=True),patch('collectors._http_get') as get:
+                a=collect_deepseek({**CONFIG,'deepseekKeyFile':str(Path(d)/'missing')})
+            self.assertEqual('deepseek_key_unavailable',a['reason']);get.assert_not_called()
+            env.write_text("DEEPSEEK_API_KEY='sk-quoted' # klucz z TaskRound\n",encoding='utf-8')
+            with patch.dict('os.environ',{},clear=True):self.assertEqual('sk-quoted',_deepseek_key({'deepseekKeyFile':str(env)}))
+    def test_deepseek_http_failure_maps_to_safe_reason(self):
+        err=urllib.error.HTTPError(DEEPSEEK_BALANCE_URL,401,'Unauthorized',{},None)
+        with patch.dict('os.environ',{'DEEPSEEK_API_KEY':DS_KEY},clear=True),patch('collectors._http_get',side_effect=err):
+            a=collect_deepseek(CONFIG)
+        self.assertEqual('auth_required',a['status']);self.assertNotIn(DS_KEY,json.dumps(a));self.assertTrue(a['accountRef'].startswith('deepseek-'))
+    def test_deepseek_live_shape_collected(self):
+        with patch.dict('os.environ',{'DEEPSEEK_API_KEY':DS_KEY},clear=True),patch('collectors._http_get',return_value=json.dumps(balance()).encode()) as get:
+            a=collect_deepseek(CONFIG)
+        self.assertEqual('fresh',a['status']);self.assertEqual('Bearer '+DS_KEY,get.call_args.args[0].get_header('Authorization'))
+    def test_deepseek_key_never_follows_a_redirect(self):
+        seen=[]
+        class Target(BaseHTTPRequestHandler):
+            def log_message(self,*a):pass
+            def do_GET(self):seen.append(self.headers.get('Authorization'));self.send_response(200);self.end_headers();self.wfile.write(json.dumps(balance()).encode())
+        target=ThreadingHTTPServer(('127.0.0.1',0),Target)
+        class Bounce(BaseHTTPRequestHandler):
+            def log_message(self,*a):pass
+            def do_GET(self):self.send_response(302);self.send_header('Location','http://127.0.0.1:%d/'%target.server_port);self.end_headers()
+        bounce=ThreadingHTTPServer(('127.0.0.1',0),Bounce)
+        for s in (target,bounce):threading.Thread(target=s.serve_forever,daemon=True).start()
+        try:
+            with patch.dict('os.environ',{'DEEPSEEK_API_KEY':DS_KEY},clear=True),patch('collectors.DEEPSEEK_BALANCE_URL','http://127.0.0.1:%d/user/balance'%bounce.server_port):
+                a=collect_deepseek(CONFIG)
+        finally:
+            for s in (target,bounce):s.shutdown();s.server_close()
+        self.assertEqual('usage_fetch_failed',a['reason']);self.assertEqual([],seen)
 
 if __name__=='__main__':unittest.main()

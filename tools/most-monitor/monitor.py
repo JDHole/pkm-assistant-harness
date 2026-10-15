@@ -6,12 +6,21 @@ from logging.handlers import RotatingFileHandler
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
-from core import MonitorCore
+from core import MonitorCore, fresh_valid_until
 
-PROVIDERS=('codex','claude')
+PROVIDERS=('codex','claude','deepseek')
+# A config without enabledProviders keeps its historical meaning: both subscriptions.
+DEFAULT_PROVIDERS=('codex','claude')
+# Seconds between collections of an account that is still fresh. Claude spawns its CLI
+# and calls /api/oauth/usage; its shared cache lives ~60 s. 220 s plus one poll tick
+# stays under the 300 s freshness horizon. Failures use the separate backoff instead.
+MIN_INTERVAL={'codex':0,'claude':220,'deepseek':220}
+# Hard lower bound that no config, maxAge or manual refresh can go under: a Claude read
+# within ~60 s of any other /usage only hits the CLI cache and fails closed.
+HARD_MIN_INTERVAL={'claude':60}
 
 def enabled_providers(config):
-    value=config.get('enabledProviders',list(PROVIDERS))
+    value=config.get('enabledProviders',list(DEFAULT_PROVIDERS))
     if not isinstance(value,list) or not value or any(not isinstance(x,str) or x not in PROVIDERS for x in value) or len(set(value)) != len(value):
         raise ValueError('enabledProviders must be a non-empty list of supported providers')
     return tuple(value)
@@ -20,6 +29,9 @@ class Service:
     def __init__(self, config, collectors=None, notifier=None):
         self.config = config
         self.enabled_providers = enabled_providers(config)
+        overrides = config.get('minIntervalSeconds') or {}
+        if not isinstance(overrides, dict): raise ValueError('minIntervalSeconds must be an object')
+        self.min_interval = {p: max(HARD_MIN_INTERVAL.get(p, 0), min(3600, int(overrides.get(p, MIN_INTERVAL[p])))) for p in PROVIDERS}
         if notifier is None and config.get("notifications", True):
             try:
                 import notifier as notifier_module
@@ -31,6 +43,31 @@ class Service:
         self.cooldown = {}; self.account_cache = {}; self.attempted = {}; self.delivery_thread = None
         self.stop_event = threading.Event(); self.poll_thread = None; self.refresh_thread = None; self.stopping = False
         self.agy_usage_last_good = None
+        # A restart must not re-read a provider the stored snapshot still shows fresh, nor
+        # retry a failed one under its hard minimum (Claude would hit its own CLI cache).
+        for a in (self.core.snapshot() or {}).get('accounts', []):
+            provider = a.get('provider')
+            if provider not in self.enabled_providers: continue
+            if a.get('status') == 'fresh':
+                self.account_cache[provider] = a; self.attempted[provider] = a.get('observedAt') or 0
+            elif HARD_MIN_INTERVAL.get(provider):
+                last = a.get('receivedAt') or 0
+                self.account_cache[provider] = a; self.attempted[provider] = last
+                self.cooldown[provider] = last + HARD_MIN_INTERVAL[provider]
+    def _due(self, provider, max_age=0, now=None, manual=False):
+        """True when a collector call for provider is allowed now; mirrors collect() skips."""
+        now = time.time() if now is None else now
+        cached = self.account_cache.get(provider)
+        if cached is None: return True
+        if cached.get('status') != 'fresh': return now >= self.cooldown.get(provider, 0)
+        if max_age and now - (cached.get('observedAt') or 0) < max_age and now < (cached.get('validUntil') or 0): return False
+        floor = self.min_interval[provider]
+        # An explicit short maxAge, a manual refresh, a window reset or an expired
+        # observation may read sooner, but not under a minute.
+        if max_age: floor = min(floor, max(60, max_age))
+        if manual or now >= (cached.get('validUntil') or 0): floor = min(floor, 60)
+        floor = max(floor, HARD_MIN_INTERVAL.get(provider, 0))
+        return now - self.attempted.get(provider, 0) >= floor
     def start_polling(self):
         def loop():
             while not self.stop_event.is_set():
@@ -67,22 +104,36 @@ class Service:
         join_before_deadline(delivery_thread)
         return not any(thread and thread.is_alive() for thread in
                        (poll_thread, refresh_thread, delivery_thread))
-    def refresh(self, max_age=0):
+    def refresh(self, max_age=0, manual=False, _follow=True):
+        started = time.monotonic()
         with self.guard:
             if self.stopping:
                 raise RuntimeError('monitor is stopping')
-            if self.refreshing: future = self.refreshing
-            elif time.time() - self.last_refresh < 5: return self._visible_snapshot(self.core.snapshot())
+            # A resolved future may still sit here until its worker's finally runs.
+            joined = bool(self.refreshing and not self.refreshing.done())
+            if joined: future = self.refreshing
+            elif not manual and time.time() - self.last_refresh < 5: return self._visible_snapshot(self.core.snapshot())
             else:
                 future = concurrent.futures.Future(); self.refreshing = future
-                self.refresh_thread = threading.Thread(target=self._refresh, args=(future,max_age), name="most-monitor-refresh", daemon=True)
+                self.refresh_thread = threading.Thread(target=self._refresh, args=(future,max_age,manual), name="most-monitor-refresh", daemon=True)
                 self.refresh_thread.start()
-        return future.result(timeout=45)
-    def _refresh(self, future, max_age=0):
+        result = future.result(timeout=45)
+        # A click that joined a round started without it still gets its own manual round;
+        # Claude and DeepSeek still keep their 60 s minimum in that round.
+        if manual and joined and _follow:
+            if time.monotonic() - started < 15: return self.refresh(max_age, manual=True, _follow=False)
+            # Two long waits would outlast a reader's ~50 s budget: run it behind the answer.
+            threading.Thread(target=self._manual_behind, args=(max_age,), name="most-monitor-manual", daemon=True).start()
+        return result
+    def _manual_behind(self, max_age):
+        try: self.refresh(max_age, manual=True, _follow=False)
+        except Exception as exc: logging.warning('manual_refresh_failed: %s', type(exc).__name__)
+    def _refresh(self, future, max_age=0, manual=False):
         try:
             if self.collectors is None:
                 import collectors as c
-                funcs = {'codex': lambda: c.collect_codex(self.config), 'claude': lambda: c.collect_claude(self.config)}
+                funcs = {'codex': lambda: c.collect_codex(self.config), 'claude': lambda: c.collect_claude(self.config),
+                         'deepseek': lambda: c.collect_deepseek(self.config)}
             elif isinstance(self.collectors, dict):
                 funcs = self.collectors
             else:
@@ -92,10 +143,7 @@ class Service:
             collector_map = {provider: fn for provider, fn in funcs.items() if provider in self.enabled_providers}
             # Collector subprocess deadlines provide the hard stop; provider failures are isolated.
             def collect(provider, fn):
-                cached = self.account_cache.get(provider)
-                if max_age and cached and cached.get('status') == 'fresh' and time.time() - (cached.get('observedAt') or 0) < max_age and time.time() < (cached.get('validUntil') or 0):
-                    return cached
-                if time.time() < self.cooldown.get(provider, 0) and provider in self.account_cache:
+                if not self._due(provider, max_age, manual=manual):
                     return self.account_cache[provider]
                 try: account = fn()
                 except Exception:
@@ -109,7 +157,7 @@ class Service:
                     delay = min(3600, max(60, old_delay * 2))
                     account['retrySeconds'] = delay; self.cooldown[provider] = time.time() + delay; self.account_cache[provider] = account
                 return account
-            with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, min(2, len(collector_map)))) as ex:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, min(3, len(collector_map)))) as ex:
                 futures = [ex.submit(collect, provider, fn) for provider, fn in collector_map.items()]
                 accounts = [f.result(timeout=40) for f in futures]
             result=self.core.ingest(accounts); self.last_refresh=time.time(); self.failures=0; future.set_result(self._visible_snapshot(result))
@@ -118,11 +166,21 @@ class Service:
         except Exception as exc:
             self.failures=min(self.failures+1, 6); future.set_exception(exc)
         finally:
-            with self.guard: self.refreshing=None
+            with self.guard:
+                if self.refreshing is future: self.refreshing=None
     def usage(self, max_age=300, **filters):
         max_age=max(0, min(int(max_age), 3600)); s=self._visible_snapshot(self.core.snapshot(**filters))
         now = time.time()
-        needs = s is None or not s['accounts'] or any(a.get('status') != 'fresh' or now - (a.get('observedAt') or 0) > max_age for a in s['accounts'])
+        # Refresh only for providers a collector may run for now. An account in backoff or
+        # inside its interval would only be re-ingested, so a polling reader cannot turn a
+        # failing provider into a collection loop.
+        if s is None: needs = True
+        else:
+            wanted = [filters['provider']] if filters.get('provider') in self.enabled_providers else list(self.enabled_providers)
+            present = {a.get('provider') for a in s['accounts']}
+            old = [a.get('provider') for a in s['accounts'] if a.get('status') != 'fresh' or now - (a.get('observedAt') or 0) > max_age]
+            missing = [] if filters.get('account_ref') else [p for p in wanted if p not in present]
+            needs = any(p in self.enabled_providers and self._due(p, max_age, now) for p in old + missing)
         if needs and (s is None or now-self.last_refresh >= 5): self.refresh(max_age)
         s = self._visible_snapshot(self.core.snapshot(**filters))
         if s:
@@ -173,13 +231,13 @@ class Service:
         snapshot['alerts']=[a for a in snapshot.get('alerts',[]) if isinstance(a,dict) and a.get('provider') in self.enabled_providers]
         states=[a.get('status') for a in snapshot['accounts']]
         snapshot['status']='fresh' if states and all(x=='fresh' for x in states) else 'partial' if 'fresh' in states else 'stale' if 'stale' in states else 'error'
-        snapshot['validUntil']=min((a.get('validUntil') for a in snapshot['accounts'] if isinstance(a.get('validUntil'),(int,float))),default=None)
+        snapshot['validUntil']=fresh_valid_until(snapshot['accounts'])
         return snapshot
 
 def load_config(path=None):
     path=Path(path or Path(__file__).with_name("config.json")); data=json.loads(path.read_text(encoding="utf-8"))
     data.setdefault("port",1236); data.setdefault("pollSeconds",300); data.setdefault("notifications",True)
-    data.setdefault('enabledProviders',list(PROVIDERS))
+    data.setdefault('enabledProviders',list(DEFAULT_PROVIDERS))
     enabled_providers(data)
     if not data.get("dataDir"): raise ValueError("dataDir is required")
     return data
@@ -211,7 +269,7 @@ def _handler(service):
     threading.Thread(target=self.server.shutdown,daemon=True).start()
     return
    if path!="/most/v1/refresh": return self._send(404,{"error":"not found"})
-   try: return self._send(200,service.refresh())
+   try: return self._send(200,service.refresh(manual=True))
    except Exception: return self._send(503,{"error":"unavailable"})
  return Handler
 

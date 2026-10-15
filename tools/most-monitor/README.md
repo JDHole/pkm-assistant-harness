@@ -1,6 +1,6 @@
 # Most Monitor
 
-Private subscription telemetry for JDHole OS. A separate Python process reads enabled official subscription quota sources. The `enabledProviders` config chooses `codex`, `claude`, or both; new installs default to Codex only. A missing setting in an older config remains backwards compatible and enables both. It never asks a model to measure usage, select models, or transfer workflows.
+Private subscription telemetry for JDHole OS. A separate Python process reads enabled official subscription quota sources. The `enabledProviders` config chooses any of `codex`, `claude` and `deepseek`; new installs default to Codex only. A missing setting in an older config remains backwards compatible and enables Codex and Claude. It never asks a model to measure usage, select models, or transfer workflows.
 
 ## Contract and sources
 
@@ -13,6 +13,10 @@ Codex executable resolution runs on every collection: process `CODEX_CLI_PATH`, 
 Disabled providers are omitted from collection, persisted/live snapshots, exports, usage filters, history, alerts, and toast delivery. Existing SQLite samples and alert rows remain for audit; a queued toast for a provider disabled at startup is retired so it cannot fire if that provider is enabled later.
 
 Claude 2.1.278 was empirically found to return cached rows even on a failing HTTPS proxy, despite the intended SDK changelog behavior. The collector therefore requires an ordered `fetchUtilization: GET /api/oauth/usage` and `fetchUtilization: 200 after ...` in a unique debug log from the same CLI invocation. The temporary log is deleted; no credentials are copied or replayed. Missing markers fail closed to `unknown/unconfirmed_live_usage`. This diagnostic format is version sensitive. A future CLI change must pass the blocked-network regression probe before becoming the collector runtime.
+
+Probe of 15.10.2026: 2.1.299 logs both markers on a live read and, behind a dead proxy, logs the GET without the 200 and returns no rows, so it is the pinned runtime (`vendor/claude-2.1.299.exe`). Both 2.1.278 and 2.1.299 share an on-disk usage cache with the user's sessions and skip the request while it is younger than about 60 s; such a run has no markers and fails closed. The 220 s Claude interval keeps the monitor's reads past that window, and a rare miss after someone else's `/usage` is retried by the 60 s failure backoff. The subprocess sets `DISABLE_AUTOUPDATER=1`. `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` must not be used: with it the usage request does not return 200. The monitor must start from a clean login environment (Windows autostart, Explorer, Obsidian): a parent with `ANTHROPIC_BASE_URL` or another override makes Claude `unsupported/provider_override` by design.
+
+DeepSeek is an API account, not a subscription: the monitor reports its balance and `is_available`, no windows and no usage. It reads the key from the environment or from `deepseekKeyFile` (on this laptop the TaskRound `.env.local`), so the key stays in one place outside the vault.
 
 CLI modes are checked before `/usage`: subscription auth only, safe mode, no tools/MCP/hooks, one builtin local command, zero model turns/cost/tokens, stable account before/after. A pinned isolated official CLI is used so monitoring does not update active user sessions.
 

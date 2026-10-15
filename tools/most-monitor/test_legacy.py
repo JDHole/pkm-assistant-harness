@@ -49,6 +49,25 @@ class LegacyTest(unittest.TestCase):
         self.assertEqual(old['status'],'stale')
         self.assertTrue(all(w['used_percent'] is None for w in old['windows']))
 
+    def test_tray_keeps_fresh_codex_while_another_provider_fails(self):
+        import json,math,tempfile
+        from core import MonitorCore
+        source=Path(__file__).with_name('legacy').joinpath('most.py').read_text(encoding='utf-8')
+        fn=next(n for n in ast.parse(source).body if isinstance(n,ast.FunctionDef) and n.name=='_monitor_usage')
+        scope={'WEEKLY_MIN_MINUTES':10080,'math':math}
+        exec(compile(ast.Module(body=[fn],type_ignores=[]),'legacy-usage-adapter','exec'),scope)
+        def codex(now):return {'provider':'codex','accountRef':'a','status':'fresh','observedAt':now,'receivedAt':now,'validUntil':now+300,'plan':'p',
+            'windows':[{'poolId':'p','windowId':'w','label':'week','scope':{},'windowMinutes':10080,'usedPercent':7,'resetsAt':now+604800}]}
+        with tempfile.TemporaryDirectory() as d:
+            core=MonitorCore(d,host_id='h',enabled_providers=['codex','claude'])
+            try:
+                core.ingest([codex(1000),dict(codex(1000),provider='claude',accountRef='c')],1000)
+                core.ingest([codex(1400),{'provider':'claude','accountRef':'c','status':'unknown','reason':'unconfirmed_live_usage','windows':[],'receivedAt':1400}],1400)
+                exported=json.loads((Path(d)/'most-snapshot.json').read_text())
+            finally:core.close()
+        usage=scope['_monitor_usage'](exported,1450)
+        self.assertEqual('fresh',usage['status']);self.assertEqual(7,usage['weekly']['used_percent'])
+
     def test_legacy_never_reads_chatmock_quota_file(self):
         source=Path(__file__).with_name('legacy').joinpath('most.py').read_text(encoding='utf-8')
         tree=ast.parse(source)
