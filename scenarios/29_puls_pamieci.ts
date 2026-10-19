@@ -53,8 +53,6 @@ const BATCH = 5;
  * okno (20-40 ms) potrafiłoby uznać UDANY strzał za zwis i zrobić z tego migotliwe RED.
  */
 const STALL_MS = 150;
-/** Po tylu ms leci `abort()` w teście 2. Watchdog jest tam WYŁĄCZONY, więc może być krótko. */
-const ABORT_PO_MS = 30;
 
 const PO_PONOWIENIU = 'Streszczenie po automatycznym ponowieniu.';
 const PO_RECZNYM_PONOW = 'Streszczenie po ręcznym Ponów.';
@@ -97,8 +95,12 @@ interface AtrapaModelu extends StreamChatModelLike {
  *   `'ZWIS'` → nie oddaje ANI JEDNEGO chunka (watchdog musi go ubić),
  *   string   → `done()` z tą treścią.
  * Po wyczerpaniu skryptu powtarza ostatnią pozycję (albo zwisa, gdy skrypt pusty).
+ * `poWywolaniu` leci w następnym makrozadaniu PO zarejestrowaniu wywołania - dzięki temu test
+ * anulowania przerywa strzał, który już poleciał, zamiast zgadywać czas startu przebiegu
+ * (budzik po 30 ms przegrywał pod obciążeniem z odczytem sesji i model nie dostawał ani jednego
+ * strzału).
  */
-function atrapaModelu(script: string[] = []): AtrapaModelu {
+function atrapaModelu(script: string[] = [], poWywolaniu?: () => void): AtrapaModelu {
   const model: AtrapaModelu = {
     calls: 0,
     stopped: 0,
@@ -106,6 +108,10 @@ function atrapaModelu(script: string[] = []): AtrapaModelu {
     stream(_req, handlers) {
       const akcja = script[model.calls] ?? script[script.length - 1] ?? 'ZWIS';
       model.calls += 1;
+      if (poWywolaniu) {
+        const hook = setTimeout(poWywolaniu, 0);
+        (hook as { unref?: () => void })?.unref?.();
+      }
       if (akcja === 'ZWIS') return undefined; // cisza — nic nie wraca, nawet błąd
       const timer = setTimeout(() => handlers.done({
         choices: [{ message: { content: akcja } }],
@@ -207,17 +213,15 @@ export default ({
 
     // ═══ 2. ANULUJ W TRAKCIE ═══
     // Watchdog WYŁĄCZONY (stallTimeoutMs: 0), więc jedynym, co może domknąć krok, jest abort.
-    const modelNieskonczony = atrapaModelu(['ZWIS']);
-    const przebieg2 = swiezyPrzebieg();
+    // Abort leci zaraz PO pierwszym strzale do modelu (zdarzenie, nie zegar).
     const kontroler = new AbortController();
-    const abort = setTimeout(() => kontroler.abort(), ABORT_PO_MS);
-    (abort as { unref?: () => void })?.unref?.();
+    const modelNieskonczony = atrapaModelu(['ZWIS'], () => kontroler.abort());
+    const przebieg2 = swiezyPrzebieg();
 
     const wynik2 = await workflowZ(modelNieskonczony).runWithRun(przebieg2, {
       stallTimeoutMs: 0,
       signal: kontroler.signal,
     });
-    clearTimeout(abort);
 
     const krok2 = przebieg2.getStep('l1_batch_1')!;
     assert(
