@@ -10,7 +10,7 @@ import {
 import { buildCliCommands } from './cli/commands.js';
 
 import type { Agent } from '@plugin/modules/agents/index.js';
-import type { LoopMessage, MessageStoreLike, ParsedToolCall, RunAgentLoopOptions, RunAgentLoopResult } from '@plugin/modules/agent-loop/index.js';
+import type { LoopMessage, MessageStoreLike, ParsedToolCall, RunAgentLoopOptions, RunAgentLoopResult, ToolExecutionContext } from '@plugin/modules/agent-loop/index.js';
 import type { AgentTurnDeps, AgentTurnFlags, AgentTurnHost, AgentTurnModel } from './agentTurn.js';
 import type { CliMcpClient, CliToolRegistry, ResolvedHost } from './hostPlugin.js';
 import type { CliDeps } from './cli/commands.js';
@@ -137,6 +137,9 @@ const BASE_FLAGS: AgentTurnFlags = { prompt: 'Cześć', tools: 'readonly', maxIt
 function toolCall(name: string, id = 'call_1'): ParsedToolCall {
     return { id, name, arguments: '{}' };
 }
+
+/** Kontekst wykonania, który pętla podaje egzekutorowi od 27.09 (budżet wyniku i Stop tury). */
+const TOOL_CONTEXT: ToolExecutionContext = { resultBudgetChars: 0, shouldAbort: () => false };
 
 // ═══════════════════════════════════════════════════════════════════════════════════════
 //  Punkt 1: parsery flag (`prompt`/`tools`/`max-iterations`/`timeout`)
@@ -310,7 +313,7 @@ test('runAgentTurn: narzędzie w toolsOffered -> mcpClient.executeToolCall woła
     const { client, calls } = makeMcpClient();
     const host = makeAgentTurnHost({ mcpClient: client, toolRegistry: makeToolRegistry([{ name: 'read' }]) });
     const loopImpl = async (options: RunAgentLoopOptions): Promise<RunAgentLoopResult> => {
-        await options.executeToolCall(toolCall('read', 'call_read'));
+        await options.executeToolCall(toolCall('read', 'call_read'), TOOL_CONTEXT);
         return defaultLoopResult();
     };
     const deps = makeAgentTurnDeps({ loopImpl });
@@ -329,7 +332,7 @@ test('runAgentTurn: narzędzie SPOZA toolsOffered (model halucynuje "write" mimo
     let caughtMessage = '';
     const loopImpl = async (options: RunAgentLoopOptions): Promise<RunAgentLoopResult> => {
         try {
-            await options.executeToolCall(toolCall('write', 'call_write'));
+            await options.executeToolCall(toolCall('write', 'call_write'), TOOL_CONTEXT);
         } catch (e) {
             caughtMessage = (e as Error).message;
         }
@@ -361,7 +364,7 @@ test('runAgentTurn: tools=none -> KAŻDE narzędzie odrzucone (toolsOffered pust
     const loopImpl = async (options: RunAgentLoopOptions): Promise<RunAgentLoopResult> => {
         const offered = options.resolveTools?.() ?? [];
         t.deepEqual(offered, []);
-        try { await options.executeToolCall(toolCall('read')); } catch { rejected = true; }
+        try { await options.executeToolCall(toolCall('read'), TOOL_CONTEXT); } catch { rejected = true; }
         return defaultLoopResult();
     };
     const deps = makeAgentTurnDeps({ loopImpl });
@@ -388,7 +391,7 @@ test('runAgentTurn: rejestr/filterByAgent ZEZWALA na "write" (agent z pełnym do
         const offered = (options.resolveTools?.() ?? []) as Array<{ function: { name: string } }>;
         t.deepEqual(offered.map(d => d.function.name).sort(), ['list', 'read', 'search'], 'agent ma "write" w rejestrze, ale agent-turn go NIE oferuje modelowi');
         try {
-            await options.executeToolCall(toolCall('write', 'call_write'));
+            await options.executeToolCall(toolCall('write', 'call_write'), TOOL_CONTEXT);
         } catch (e) {
             rejectionMessage = (e as Error).message;
         }
@@ -409,7 +412,7 @@ test('runAgentTurn: mcpClient zwraca {isError:true, error:"Permission denied"} (
     const { client } = makeMcpClient(() => ({ isError: true, error: 'Permission denied: Strefa No-Go' }));
     const host = makeAgentTurnHost({ mcpClient: client, toolRegistry: makeToolRegistry([{ name: 'read' }]) });
     const loopImpl = async (options: RunAgentLoopOptions): Promise<RunAgentLoopResult> => {
-        const raw = await options.executeToolCall(toolCall('read', 'call_read'));
+        const raw = await options.executeToolCall(toolCall('read', 'call_read'), TOOL_CONTEXT);
         await options.hooks?.onIterationStart?.(0);
         await options.hooks?.onToolResults?.([{ toolCall: { id: 'call_read', name: 'read' }, result: JSON.stringify(raw) }], 0);
         return {
@@ -435,7 +438,7 @@ test('runAgentTurn: mcpClient zwraca sukces (bez isError) -> toolCalls[].ok=true
     const { client } = makeMcpClient(() => ({ success: true, content: 'tresc pliku' }));
     const host = makeAgentTurnHost({ mcpClient: client, toolRegistry: makeToolRegistry([{ name: 'read' }]) });
     const loopImpl = async (options: RunAgentLoopOptions): Promise<RunAgentLoopResult> => {
-        const raw = await options.executeToolCall(toolCall('read', 'call_read'));
+        const raw = await options.executeToolCall(toolCall('read', 'call_read'), TOOL_CONTEXT);
         await options.hooks?.onToolResults?.([{ toolCall: { id: 'call_read', name: 'read' }, result: JSON.stringify(raw) }], 0);
         return { ...defaultLoopResult(), toolCallDetails: [{ name: 'read', args: {}, resultPreview: JSON.stringify(raw) }] };
     };
