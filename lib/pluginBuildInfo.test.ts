@@ -14,9 +14,15 @@ import { resolvePluginGitInfo } from './pluginBuildInfo.ts';
  * pod testem (self-referential test byłby, gdyby oczekiwaną wartość liczyła TA SAMA funkcja).
  */
 
+const tempDirs: string[] = [];
+test.afterEach.always(() => {
+    for (const dir of tempDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+});
+
 function tempDir(tag: string): string {
     const dir = path.join(os.tmpdir(), `pkm-harness-plugin-build-info-test-${tag}-${Date.now()}-${Math.random().toString(36).slice(2)}`);
     fs.mkdirSync(dir, { recursive: true });
+    tempDirs.push(dir);
     return dir;
 }
 

@@ -22,13 +22,13 @@ import { createMockApp } from './app.js';
 
 function tempVault(tag: string): string {
     const dir = path.join(os.tmpdir(), `pkm-harness-mock-app-test-${tag}-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-    fs.mkdirSync(dir, { recursive: true });
     return dir;
 }
 
 test('vault.process: trzy wywołania RÓWNOLEGŁE na jednym pliku - żadne nie gubi cudzej zmiany (lost update)', async t => {
     const vaultRoot = tempVault('parallel');
     t.teardown(() => fs.rmSync(vaultRoot, { recursive: true, force: true }));
+    fs.mkdirSync(vaultRoot, { recursive: true });
 
     fs.writeFileSync(path.join(vaultRoot, 'note.md'), 'START\n');
     const app = createMockApp(vaultRoot);
@@ -54,6 +54,7 @@ test('vault.process: trzy wywołania RÓWNOLEGŁE na jednym pliku - żadne nie g
 test('vault.process: dwie ścieżki RÓŻNE nie blokują się nawzajem (zamek jest PER ŚCIEŻKA)', async t => {
     const vaultRoot = tempVault('per-path');
     t.teardown(() => fs.rmSync(vaultRoot, { recursive: true, force: true }));
+    fs.mkdirSync(vaultRoot, { recursive: true });
 
     fs.writeFileSync(path.join(vaultRoot, 'a.md'), 'A0\n');
     fs.writeFileSync(path.join(vaultRoot, 'b.md'), 'B0\n');
@@ -71,6 +72,7 @@ test('vault.process: dwie ścieżki RÓŻNE nie blokują się nawzajem (zamek je
 test('vault.process: gdy JEDEN callback rzuca, kolejne wywołanie na tej samej ścieżce nie zostaje zablokowane na zawsze', async t => {
     const vaultRoot = tempVault('reject');
     t.teardown(() => fs.rmSync(vaultRoot, { recursive: true, force: true }));
+    fs.mkdirSync(vaultRoot, { recursive: true });
 
     fs.writeFileSync(path.join(vaultRoot, 'note.md'), 'START\n');
     const app = createMockApp(vaultRoot);

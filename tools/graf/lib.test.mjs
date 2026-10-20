@@ -7,8 +7,14 @@ import {spawn, spawnSync} from 'node:child_process';
 import test from 'node:test';
 import {ack, decide, dispatch, GrafError, next, prepare, probe, reconcile, record, report, resume, retry, sha256} from './index.mjs';
 
+const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'graf-tests-'));
+test.after(() => fs.rmSync(tempRoot, {recursive: true, force: true}));
+process.env.TEMP = tempRoot;
+process.env.TMP = tempRoot;
+process.env.TMPDIR = tempRoot;
+
 function fixture() {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'graf-test-')); const repo = path.join(root, 'repo'); const data_root = path.join(root, 'data'); fs.mkdirSync(repo); fs.writeFileSync(path.join(repo, 'input.txt'), 'alpha\nβeta\n', 'utf8');
+  const root = fs.mkdtempSync(path.join(tempRoot, 'graf-test-')); const repo = path.join(root, 'repo'); const data_root = path.join(root, 'data'); fs.mkdirSync(repo); fs.writeFileSync(path.join(repo, 'input.txt'), 'alpha\nβeta\n', 'utf8');
   const base = {data_root, run_id: 'run', task: 'Test the bounded coordinator.', acceptance_criteria: ['An evidence file exists.'], repo, base_commit: 'a'.repeat(40), allow_unverified_base_commit: true, context: {max_input_bytes: 48000, mandatory: [{path: 'input.txt', range: {start: 1, end: 1}}], candidates: []}, nodes: [{node_id: 'write', kind: 'implementation', goal: 'Write a result.', depends_on: [], required: true, input_refs: [{path: 'input.txt'}], output_contract: {type: 'result'}, acceptance: ['A result exists.'], write_scope: 'repo', write_paths: ['input.txt'], executor: 'terra', model: 'gpt-5.6-terra', effort: 'medium', timeout_seconds: 60, max_attempts: 2}, {node_id: 'review', kind: 'review', goal: 'Review independently.', depends_on: ['write'], required: true, input_refs: [{path: 'input.txt'}], output_contract: {type: 'review'}, acceptance: ['Review result.'], write_scope: 'read-only', executor: 'sol', model: 'gpt-5.6-sol', effort: 'high', timeout_seconds: 60, max_attempts: 1, reviewer_for: 'write'}]};
   return {root, repo, data_root, base};
 }
