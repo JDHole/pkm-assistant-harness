@@ -21,14 +21,13 @@ function freshTempRoot(tag: string): string {
 
 test('copyFixture: własny fixtureDir → temp-vault niesie notatkę Z NIEGO, nie plik z domyślnego fixture', async t => {
     const customFixture = freshTempRoot('custom-fixture');
-    await fsp.mkdir(customFixture, { recursive: true });
-    await fsp.writeFile(path.join(customFixture, 'wlasna-notatka.md'), '# Własna notatka testowa\n', 'utf8');
-
     const tempRoot = freshTempRoot('custom-temp');
     t.teardown(async () => {
-        await fsp.rm(customFixture, { recursive: true, force: true }).catch(() => {});
         await fsp.rm(tempRoot, { recursive: true, force: true }).catch(() => {});
+        await fsp.rm(customFixture, { recursive: true, force: true }).catch(() => {});
     });
+    await fsp.mkdir(customFixture, { recursive: true });
+    await fsp.writeFile(path.join(customFixture, 'wlasna-notatka.md'), '# Własna notatka testowa\n', 'utf8');
 
     await copyFixture(tempRoot, customFixture);
 
@@ -50,6 +49,9 @@ test('copyFixture: bez fixtureDir kopiowany jest domyślny vault-fixture (Notatk
 test('copyFixture: nieistniejący fixtureDir rzuca czytelny błąd zamiast surowego ENOENT z fsp.cp', async t => {
     const tempRoot = freshTempRoot('missing-temp');
     const missing = freshTempRoot('nie-istnieje');
+    t.teardown(async () => {
+        await fsp.rm(tempRoot, { recursive: true, force: true }).catch(() => {});
+    });
 
     const err = await t.throwsAsync(() => copyFixture(tempRoot, missing));
     t.truthy(err, 'brakujący katalog fixture miał rzucić błąd, a nie rzucił');

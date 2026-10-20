@@ -4,9 +4,15 @@ import os from 'node:os';
 import path from 'node:path';
 import { parseDeployConfig, companionDeployDir, deployCompanion } from './companionDeploy.ts';
 
+const tempDirs: string[] = [];
+test.afterEach.always(() => {
+    for (const dir of tempDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+});
+
 function tempDir(tag: string): string {
     const dir = path.join(os.tmpdir(), `pkm-harness-companion-deploy-test-${tag}-${Date.now()}-${Math.random().toString(36).slice(2)}`);
     fs.mkdirSync(dir, { recursive: true });
+    tempDirs.push(dir);
     return dir;
 }
 
