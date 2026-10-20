@@ -51,7 +51,7 @@ PKM_ASSISTANT_ROOT=/sciezka/do/pluginu npm run scenarios   # plugin gdzie indzie
 ```bash
 npm run harness              # build + dry-boot: plugin wstaje w Node, raport DoD (bez modelu)
 npm run selftest             # pełny cykl pętli z fake-serwerem SSE (offline, bez klucza, 0 kosztów)
-npm run scenarios            # 37 scenariuszy-łamaczy [OFFLINE deterministyczny] — regression suite
+npm run scenarios            # 44 scenariusze-łamacze [OFFLINE deterministyczny] (regression suite)
 npm run scenarios:live       # te same scenariusze na ŻYWYM DeepSeeku (wymaga klucza, płatne grosze)
 npm run build                # sam build (dist/)
 npm run build:companion      # build wtyczki-nosiciela CLI (dist/companion/) — patrz niżej
@@ -244,7 +244,7 @@ jest niedeterministyczny i to jest OK. Dziwne zachowanie modelu przy zielonych i
 **Zasada znalezisk:** jeśli scenariusz obnaża buga PRODUKCJI — scenariusz zostaje RED
 z dowodem (fragment trace + stan fs). NIE naprawiamy produkcji „przy okazji" w harnessie.
 
-Pierwsza fala (FAZA C, numeracja 01-14) — 14 z 37 scenariuszy łącznie (reszta niżej):
+Pierwsza fala (FAZA C, numeracja 01-14): 14 z 44 scenariuszy w domyślnej bramce (reszta niżej):
 smoke pętli · backstop · izolacja `.pkm-assistant` · No-Go · create-only pamięci ·
 edge+deny · yolo-nie-omija-uprawnień · artefakt plan (create+patch) · todo (create+check) ·
 sklejone tool_calls DeepSeeka (deterministyczna reprodukcja historycznego buga E2.1) ·
@@ -298,6 +298,21 @@ Do tego **14 pisarze sesji (S36)** — event-log przeżywa autozapis i restart (
   żadna komenda niczego nie zapisuje na dysku vaulta (migawka treści+mtime+sha256 całego drzewa
   przed konstrukcją `companion/` i po wszystkich wywołaniach, bez katalogu `.pkm-assistant/logs/`
   — uzasadnienie w nagłówku pliku scenariusza). Offline-only (CLI nie dotyka modelu).
+- **49 limit25**: sub zużywa dokładnie 25 kroków bez odpowiedzi; blokujący delegate i bieg
+  w tle zachowują `limit/partial`, dorobek i `success:false` tam, gdzie wynik jest blokujący.
+- **50 synteza 500**: HTTP 500 w finalnym zapytaniu syntezy zachowuje odczyt w `partial_result`,
+  outcome i handoff rejestru.
+- **51 błąd narzędzia suba**: nieudany zapis pozostaje efektem `error`, widocznym w krokach
+  rejestru i trace, mimo że sub kończy odpowiedzią.
+- **52 Stop suba czekającego na slot modelu**: przy limicie dwóch delegacji oba biegi mają
+  wpisy w rejestrze, ale tylko jeden slot modelu. Stop na drugim wpisie daje `stopped/by user`,
+  zero requestów tego suba, `finished` pierwszego, `success:false` i liczniki
+  `finished:1, partial:0, failed:1`. Stop zadania czekającego w kolejce puli delegacji,
+  jeszcze bez wpisu w rejestrze, dojdzie z jednostką pluginu „kolejka widoczna w rejestrze”.
+- **53 późny wynik**: odpowiedź modelu z `tool_call`, zwolniona po `requestStop`, nie uruchamia
+  narzędzia i nie zmienia terminalnego outcome.
+- **54 zapis raz i izolacja**: sub zapisuje plik dokładnie raz, a outcome i handoff zachowują
+  `check: matches`; blok `subagent_call` trafia do sesji zlecającego, bez pliku sesji obcego agenta.
 
 Asercje dostają też `plugin` — ŻYWY obiekt pluginu tego biegu (przed cleanupem). Scenariusz może
 po turze wołać produkcyjne API na tym samym temp-vaultcie (`14_sesja_pisarze` symuluje tak autozapis

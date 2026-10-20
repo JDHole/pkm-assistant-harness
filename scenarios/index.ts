@@ -53,9 +53,17 @@ import s46 from './46_boot_bez_starterow.js';
 import s47 from './47_cli_odczyt.js';
 // agent-turn (fala 2): jedna tura produkcyjnej pętli agenta przez CLI, tryb bezpieczny.
 import s48 from './48_cli_agent_turn.js';
+// Wyniki subów 2.4: limit, synteza, błędy narzędzi, Stop i izolacja sesji.
+import s49 from './49_limit25.js';
+import s50 from './50_synteza_500.js';
+import s51 from './51_blad_narzedzia_suba.js';
+import s52 from './52_stop_w_kolejce.js';
+import s53 from './53_pozny_wynik.js';
+import s54 from './54_zapis_raz_i_izolacja.js';
 
 export const SCENARIOS = [
   s01, s02, s03, s04, s05, s06, s07, s08, s09, s10, s11, s12, s13, s14,
   s25, s26, s27, s28, s29, s30, s31, s32, s33, s34, s35, s36, s37, s38, s39,
   s40, s41, s42, s43, s44, s45, s46, s47, s48,
+  s49, s50, s51, s52, s53, s54,
 ];
