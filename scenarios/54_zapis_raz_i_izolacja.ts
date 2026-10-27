@@ -20,14 +20,14 @@ const OWNER = 'Tester';
 const OTHER = 'Podgladacz';
 const FILE = 'Notatki/limit-write-once.md';
 const CONTENT = 'zapis wykonany raz przez suba';
+const TASK = 'Zapisz notatkę raz i oddaj dorobek.';
 const OWNER_SESSION = '.pkm-assistant/agents/tester/memory/sessions/active';
 const OTHER_SESSION = '.pkm-assistant/agents/podgladacz/memory/sessions/active';
 const state = { writes: 0, switched: 0 };
 
 function isSub(request: FixturePayload): boolean {
-  const system = (request?.messages || []).find((message: FixturePayload) => message?.role === 'system');
-  const content = Array.isArray(system?.content) ? system.content.map((part: FixturePayload) => part?.text || '').join('\n') : system?.content;
-  return typeof content === 'string' && /Jesteś sub-agentem /.test(content);
+  return (request?.messages || []).some((message: FixturePayload) =>
+    message?.role === 'user' && typeof message.content === 'string' && message.content.includes(TASK));
 }
 
 function agentYaml(name: string, description: string): string {
@@ -88,7 +88,7 @@ export default ({
     if (isSub(ctx.request)) {
       return toolCallTurn('write', { path: FILE, content: CONTENT, mode: 'create' });
     }
-    if (lastToolResults(ctx.request).length === 0) return toolCallTurn('delegate', { task: 'Zapisz notatkę raz i oddaj dorobek.', aspect: 'worker' });
+    if (lastToolResults(ctx.request).length === 0) return toolCallTurn('delegate', { task: TASK, aspect: 'worker' });
     return textTurn('Zlecenie przekazane do suba.');
   },
 
