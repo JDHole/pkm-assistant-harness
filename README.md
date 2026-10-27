@@ -314,7 +314,7 @@ Do tego **14 pisarze sesji (S36)** — event-log przeżywa autozapis i restart (
 - **54 zapis raz i izolacja**: sub zapisuje plik dokładnie raz, a outcome i handoff zachowują
   `check: matches`; blok `subagent_call` trafia do sesji zlecającego, bez pliku sesji obcego agenta.
 - **55 Stop w kolejce puli**: dwa zadania przy szerokości puli 1, Stop drugiego przed startem,
-  doręczenie do właściwej zakładki oraz odmowa inicjalizacji oczekującego zadania.
+  brak auto-tury po Stopie i oczekiwanie wyniku w kolejce oraz odmowa inicjalizacji oczekującego zadania.
 
 Asercje dostają też `plugin` — ŻYWY obiekt pluginu tego biegu (przed cleanupem). Scenariusz może
 po turze wołać produkcyjne API na tym samym temp-vaultcie (`14_sesja_pisarze` symuluje tak autozapis
