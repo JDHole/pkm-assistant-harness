@@ -308,11 +308,13 @@ Do tego **14 pisarze sesji (S36)** — event-log przeżywa autozapis i restart (
   wpisy w rejestrze, ale tylko jeden slot modelu. Stop na drugim wpisie daje `stopped/by user`,
   zero requestów tego suba, `finished` pierwszego, `success:false` i liczniki
   `finished:1, partial:0, failed:1`. Stop zadania czekającego w kolejce puli delegacji,
-  jeszcze bez wpisu w rejestrze, dojdzie z jednostką pluginu „kolejka widoczna w rejestrze”.
+  testuje osobno scenariusz 55.
 - **53 późny wynik**: odpowiedź modelu z `tool_call`, zwolniona po `requestStop`, nie uruchamia
   narzędzia i nie zmienia terminalnego outcome.
 - **54 zapis raz i izolacja**: sub zapisuje plik dokładnie raz, a outcome i handoff zachowują
   `check: matches`; blok `subagent_call` trafia do sesji zlecającego, bez pliku sesji obcego agenta.
+- **55 Stop w kolejce puli**: dwa zadania przy szerokości puli 1, Stop drugiego przed startem,
+  doręczenie do właściwej zakładki oraz odmowa inicjalizacji oczekującego zadania.
 
 Asercje dostają też `plugin` — ŻYWY obiekt pluginu tego biegu (przed cleanupem). Scenariusz może
 po turze wołać produkcyjne API na tym samym temp-vaultcie (`14_sesja_pisarze` symuluje tak autozapis
