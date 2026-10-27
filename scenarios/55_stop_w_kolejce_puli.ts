@@ -63,12 +63,11 @@ async function probe(plugin: FixturePayload, failure: boolean): Promise<void> {
         assert(sent.length === 0, `Obca zakładka otrzymała wynik: ${JSON.stringify(sent)}.`);
         owner.isActive = true;
         other.isActive = false;
-        assert(_deliverSubTaskResult.call(view, second) === true, 'Nie doręczono wyniku właścicielowi.');
+        assert(_deliverSubTaskResult.call(view, second) === false, 'Stop uruchomił auto-turę właściciela.');
         await Promise.resolve();
-        assert(Number(sent.length) === 1 && sent[0].meta?._subTaskResult?.outcome?.end?.kind === 'stopped'
-          && sent[0].meta._subTaskResult.outcome.end.by === 'user'
-          && typeof sent[0].injectedText === 'string' && /użytkownik/i.test(sent[0].injectedText),
-        `Doręczenie nie opisuje Stopu użytkownika: ${JSON.stringify(sent)}.`);
+        assert(sent.length === 0, `Właściciel otrzymał automatyczną wiadomość: ${JSON.stringify(sent)}.`);
+        assert(plugin.subTaskNotifier.pending().some((task: FixturePayload) => task.id === secondId),
+          `Wynik zatrzymanego zadania ${secondId} nie czeka w kolejce notifiera.`);
       }
     }
   } finally {
