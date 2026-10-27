@@ -51,23 +51,25 @@ async function probe(plugin: FixturePayload, failure: boolean): Promise<void> {
     } else {
       assert(second?.outcome?.end?.kind === 'stopped' && second.outcome.end.by === 'user'
         && second.outcome.completeness === 'empty', `Wynik Stopu: ${evidence}.`);
-      const sent: FixturePayload[] = [];
-      const owner = { ...origin, sessionId: origin.tabKey, isActive: false };
-      const other = { ...origin, sessionId: 'other', isActive: true };
-      const view: FixturePayload = { chatTabs: [owner, other], _autoTurnChainCounts: new Map(),
-        _subTaskTurnPending: false, is_generating: false, _drainSuppressed: false,
-        env: plugin.env, plugin, send_message: (message: FixturePayload) => sent.push(message) };
-      assert(_deliverSubTaskResult.call(view, second) === false, 'Wynik doręczono do obcej aktywnej zakładki.');
-      await Promise.resolve();
-      assert(sent.length === 0, `Obca zakładka otrzymała wynik: ${JSON.stringify(sent)}.`);
-      owner.isActive = true;
-      other.isActive = false;
-      assert(_deliverSubTaskResult.call(view, second) === true, 'Nie doręczono wyniku właścicielowi.');
-      await Promise.resolve();
-      assert(Number(sent.length) === 1 && sent[0].meta?._subTaskResult?.outcome?.end?.kind === 'stopped'
-        && sent[0].meta._subTaskResult.outcome.end.by === 'user'
-        && typeof sent[0].injectedText === 'string' && /użytkownik/i.test(sent[0].injectedText),
-      `Doręczenie nie opisuje Stopu użytkownika: ${JSON.stringify(sent)}.`);
+      for (const otherPath of [origin.sessionPath, 'Chats/other.md']) {
+        const sent: FixturePayload[] = [];
+        const owner = { ...origin, sessionId: origin.tabKey, isActive: false };
+        const other = { ...origin, sessionPath: otherPath, sessionId: 'other', isActive: true };
+        const view: FixturePayload = { chatTabs: [other, owner], _autoTurnChainCounts: new Map(),
+          _subTaskTurnPending: false, is_generating: false, _drainSuppressed: false,
+          env: plugin.env, plugin, send_message: (message: FixturePayload) => sent.push(message) };
+        assert(_deliverSubTaskResult.call(view, second) === false, 'Wynik doręczono do obcej aktywnej zakładki.');
+        await Promise.resolve();
+        assert(sent.length === 0, `Obca zakładka otrzymała wynik: ${JSON.stringify(sent)}.`);
+        owner.isActive = true;
+        other.isActive = false;
+        assert(_deliverSubTaskResult.call(view, second) === true, 'Nie doręczono wyniku właścicielowi.');
+        await Promise.resolve();
+        assert(Number(sent.length) === 1 && sent[0].meta?._subTaskResult?.outcome?.end?.kind === 'stopped'
+          && sent[0].meta._subTaskResult.outcome.end.by === 'user'
+          && typeof sent[0].injectedText === 'string' && /użytkownik/i.test(sent[0].injectedText),
+        `Doręczenie nie opisuje Stopu użytkownika: ${JSON.stringify(sent)}.`);
+      }
     }
   } finally {
     plugin.env.config.chat.providers = providers;
