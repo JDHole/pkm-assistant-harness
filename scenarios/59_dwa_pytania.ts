@@ -1,7 +1,6 @@
 /** Dwa pytania w tle: adresowanie odpowiedzi i serializacja tur prowadzącego. */
 import { textTurn, toolCallTurn, lastToolResults } from '../mock/fake-llm-server.js';
-import { runExploratoryTurn } from '../lib/runTurn.js';
-import { _deliverSubTaskQuestion } from '@plugin/modules/chat/chat/chat_streaming.js';
+import { chatFixture } from './_chat_fixture.js';
 import { assert } from './_asserts.js';
 import type { FixturePayload, Scenario } from './_asserts.js';
 
@@ -36,8 +35,12 @@ export default ({
       state.requests[sub].push(ctx.request);
       return lastToolResults(ctx.request).length === 0 ? toolCallTurn('ask_parent', { text: questions[sub] }) : textTurn(results[sub]);
     }
-    const q = questions.findIndex(question => messages.includes(question));
-    if (q >= 0) return lastToolResults(ctx.request).length === 0
+    const lastUser = [...(ctx.request?.messages || [])].reverse().find((m: FixturePayload) => m.role === 'user');
+    const q = questions.findIndex(question => String(lastUser?.content).includes(question));
+    state.activeMeta = state.window?.messages.find((m: FixturePayload) => m.question === questions[q]);
+    const userIndex = (ctx.request?.messages || []).lastIndexOf(lastUser);
+    const currentToolResult = (ctx.request?.messages || []).slice(userIndex + 1).some((m: FixturePayload) => m.role === 'tool');
+    if (q >= 0) return !currentToolResult
       ? toolCallTurn('sub_agent', { action: 'message', sub_id: state.activeMeta.subId, question_id: state.activeMeta.questionId, text: answers[q] })
       : textTurn('Odpowiedź wysłana.');
     return textTurn('Tura kontrolna zakończona.');
@@ -45,35 +48,18 @@ export default ({
   async asserts({ plugin }: FixturePayload) {
     const registry = plugin.subTaskRegistry;
     const notifier = plugin.subTaskNotifier;
-    const tab = { ...origin, sessionId: origin.tabKey, isActive: true };
-    const window = { messages: [] as FixturePayload[] };
-    const agentManager = { getActiveAgent: () => ({ name: 'Tester' }), getAgentMemory: () => ({ activeSessionPath: origin.sessionPath, sessionEpoch: origin.sessionEpoch }) };
-    const view: FixturePayload = { chatTabs: [tab], rollingWindow: window, plugin: { subTaskRegistry: registry, subTaskNotifier: notifier, agentManager },
-      env: plugin.env, _autoTurnChainCounts: new Map(), _subTaskTurnPending: false, is_generating: false, _drainSuppressed: false,
-      send_message: async (opts: FixturePayload) => {
-        state.active++;
-        state.max = Math.max(state.max, state.active);
-        view.is_generating = true;
-        state.turns.push(opts.meta);
-        state.activeMeta = opts.meta;
-        window.messages.push(opts.meta);
-        opts.questionDelivery.claim.ack();
-        try {
-          await until(() => registry.list().filter((t: FixturePayload) => registry.getQuestionState(t.id).kind === 'waiting').length === 2 || state.turns.length > 1);
-          if (state.turns.length === 1) state.bothWaiting = registry.list().filter((t: FixturePayload) => registry.getQuestionState(t.id).kind === 'waiting').length === 2;
-          await runExploratoryTurn(plugin, { agentName: 'Tester', prompt: opts.injectedText, autonomy: 'yolo', origin, awaitSubTasks: false });
-        } finally {
-          state.active--;
-          view.is_generating = false;
-          setTimeout(() => notifier.drain(), 10);
-        }
-      } };
-    notifier.setNoticeDeliverer((notice: FixturePayload) => notice.kind === 'question' ? _deliverSubTaskQuestion.call(view, notice.question) : false);
+    const fixture = chatFixture(plugin, origin, async () => {
+      if (state.bothWaiting) return;
+      await until(() => registry.list().filter((t: FixturePayload) => registry.getQuestionState(t.id).kind === 'waiting').length === 2);
+      state.bothWaiting = registry.list().filter((t: FixturePayload) => registry.getQuestionState(t.id).kind === 'waiting').length === 2;
+    });
+    state.window = fixture.window;
     const receipts = await Promise.all(tasks.map((task, i) => plugin.mcpClient.executeToolCall(
       { id: `parallel-${i}`, name: 'delegate', arguments: { task, background: true } }, 'Tester', { autonomy: 'yolo', origin })));
     assert(receipts.every((r: FixturePayload) => r.started && typeof r.task_id === 'string'), `Pokwitowania: ${JSON.stringify(receipts)}.`);
-    await until(() => receipts.every((r: FixturePayload) => registry.getTask(r.task_id)?.status !== 'running') && state.active === 0);
-    assert(state.bothWaiting && state.turns.length === 2 && state.max === 1, `Auto-tury: ${JSON.stringify({ turns: state.turns, max: state.max, bothWaiting: state.bothWaiting })}.`);
+    await until(() => receipts.every((r: FixturePayload) => registry.getTask(r.task_id)?.status !== 'running') && fixture.turns.completed === 2 && fixture.turns.active === 0);
+    state.turns = fixture.window.messages.filter((m: FixturePayload) => m.questionId);
+    assert(state.bothWaiting && state.turns.length === 2 && fixture.turns.completed === 2 && fixture.turns.maxQuestions === 1 && fixture.errors.length === 0, `Auto-tury: ${JSON.stringify({ turns: state.turns, counts: fixture.turns, bothWaiting: state.bothWaiting, errors: fixture.errors })}.`);
     for (let i = 0; i < 2; i++) {
       const task = registry.getTask(receipts[i].task_id);
       const meta = state.turns.find((m: FixturePayload) => m.question === questions[i]);

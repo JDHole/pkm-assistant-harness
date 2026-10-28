@@ -1,7 +1,6 @@
 /** Pytanie budzi prowadzącego, który odpowiada w automatycznej turze modelu. */
 import { textTurn, toolCallTurn, lastToolResults } from '../mock/fake-llm-server.js';
-import { runExploratoryTurn } from '../lib/runTurn.js';
-import { _deliverSubTaskQuestion, _deliverSubTaskResult } from '@plugin/modules/chat/chat/chat_streaming.js';
+import { chatFixture } from './_chat_fixture.js';
 import { assert } from './_asserts.js';
 import type { FixturePayload, Scenario } from './_asserts.js';
 
@@ -36,6 +35,7 @@ export default ({
         ? toolCallTurn('ask_parent', { text: QUESTION }) : textTurn(RESULT);
     }
     if (messages.includes(QUESTION)) {
+      state.question = state.window?.messages.find((m: FixturePayload) => m.questionId);
       if (lastToolResults(ctx.request).length === 0) return toolCallTurn('sub_agent', {
         action: 'message', sub_id: state.question.subId, question_id: state.question.questionId, text: ANSWER,
       });
@@ -46,36 +46,24 @@ export default ({
   async asserts({ plugin }: FixturePayload) {
     const registry = plugin.subTaskRegistry;
     const notifier = plugin.subTaskNotifier;
-    const tab = { ...origin, sessionId: origin.tabKey, isActive: true };
-    const window = { messages: [] as FixturePayload[] };
-    const agentManager = { getActiveAgent: () => ({ name: 'Tester' }), getAgentMemory: () => ({ activeSessionPath: origin.sessionPath, sessionEpoch: origin.sessionEpoch }) };
-    const view: FixturePayload = { chatTabs: [tab], rollingWindow: window, plugin: { subTaskRegistry: registry, subTaskNotifier: notifier, agentManager },
-      env: plugin.env, _autoTurnChainCounts: new Map(), _subTaskTurnPending: false, is_generating: false, _drainSuppressed: false,
-      send_message: async (opts: FixturePayload) => {
-        state.auto.push(opts);
-        if (opts.questionDelivery) {
-          state.question = opts.meta;
-          window.messages.push(opts.meta);
-          opts.questionDelivery.claim.ack();
-          await runExploratoryTurn(plugin, { agentName: 'Tester', prompt: opts.injectedText, autonomy: 'yolo', origin, awaitSubTasks: false });
-        }
-      } };
-    notifier.setNoticeDeliverer((notice: FixturePayload) => notice.kind === 'question'
-      ? _deliverSubTaskQuestion.call(view, notice.question) : _deliverSubTaskResult.call(view, notice.task));
+    const fixture = chatFixture(plugin, origin);
+    state.window = fixture.window;
     const receipt = await plugin.mcpClient.executeToolCall(
       { id: 'question-answer', name: 'delegate', arguments: { task: TASK, background: true } }, 'Tester', { autonomy: 'yolo', origin });
     const id = receipt.task_id;
     assert(receipt.started === true && typeof id === 'string', `Brak pokwitowania: ${JSON.stringify(receipt)}.`);
     await until(() => registry.getTask(id)?.status !== 'running');
     const task = registry.getTask(id);
-    await until(() => state.auto.length >= 2);
-    const meta = state.question;
+    await until(() => fixture.window.messages.some((m: FixturePayload) => m._subTaskNotification) && fixture.turns.active === 0);
+    const meta = fixture.window.messages.find((m: FixturePayload) => m.questionId);
     assert(meta?.question === QUESTION && meta.name === 'pkm-sub' && meta.taskId === id && meta.subId === task.threadId && typeof meta.questionId === 'string', `Dane auto-tury: ${JSON.stringify(meta)}.`);
-    assert([QUESTION, 'pkm-sub', task.threadId, meta.questionId].every(value => state.auto[0].injectedText.includes(value)), `Treść auto-tury: ${state.auto[0].injectedText}.`);
+    assert([QUESTION, 'pkm-sub', task.threadId, meta.questionId].every(value => String(meta.content).includes(value)), `Treść auto-tury: ${meta.content}.`);
     assert(state.subRequests.length === 2 && lastToolResults(state.subRequests[1])[0] === ANSWER, `Odpowiedź suba: ${JSON.stringify(state.subRequests)}.`);
     assert(task.result?.text === RESULT && task.outcome?.end?.kind === 'finished', `Wynik: ${JSON.stringify(task.result)}.`);
-    assert(state.auto.filter((x: FixturePayload) => x.meta?.questionId).length === 1 && state.auto.length === 2,
-      `Liczba auto-tur pytania i wyniku: ${state.auto.length}.`);
+    assert(fixture.window.messages.filter((m: FixturePayload) => m.questionId).length === 1 && fixture.errors.length === 0,
+      `Wiadomości lub błędy: ${JSON.stringify({ messages: fixture.window.messages, errors: fixture.errors })}.`);
+    assert(fixture.events.some((event: FixturePayload) => event.content?.includes(QUESTION)), 'Pytanie nie dotarło do zapisu sesji.');
+    assert(fixture.window.messages.some((m: FixturePayload) => m._subTaskNotification) && fixture.turns.active === 0, 'Tura wyniku nie zakończyła się.');
     assert(!notifier.pendingNotices().some((n: FixturePayload) => n.kind === 'result' && n.task.id === id), 'Wynik nie został odebrany.');
     notifier.setNoticeDeliverer(null);
   },
