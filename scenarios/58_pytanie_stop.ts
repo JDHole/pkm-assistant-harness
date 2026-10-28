@@ -55,8 +55,9 @@ export default ({
     await until(() => task.status !== 'running');
     assert(task.status !== 'running', 'Bieg wisi po Stopie.');
     assert(task.result?.outcome?.end?.kind === 'stopped' && task.result.outcome.end.by === 'user', `Outcome: ${JSON.stringify(task.result)}.`);
-    assert(task.result?.question?.text === QUESTION && task.result.question.resolution.kind === 'cancelled', `Pytanie w wyniku: ${JSON.stringify(task.result)}.`);
-    assert(String(task.result?.text).includes(QUESTION) && String(task.result?.text).includes('Powitanie'), `Brak dorobku lub pytania: ${JSON.stringify(task.result)}.`);
+    assert(task.result?.question?.text === QUESTION && task.result.question.resolution.kind === 'cancelled'
+      && task.result.question.resolution.by === 'user' && task.result.question.resolution.reason === 'stop', `Pytanie w wyniku: ${JSON.stringify(task.result)}.`);
+    assert(String(task.result?.text).includes('Powitanie'), `Brak dorobku: ${JSON.stringify(task.result)}.`);
     assert(state.requests === 2, `Po Stopie wysłano kolejne zapytanie modelu: ${state.requests}.`);
     assert(_deliverSubTaskQuestion.call(view, question.question) === false && _deliverSubTaskResult.call(view, task) === false,
       'Stop nie zablokował automatycznego dostarczenia.');

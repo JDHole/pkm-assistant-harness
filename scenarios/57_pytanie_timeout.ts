@@ -1,5 +1,6 @@
 /** Pięć minut oczekiwania mierzone zegarem protokołu, bez rzeczywistego oczekiwania. */
 import { textTurn, toolCallTurn, lastToolResults } from '../mock/fake-llm-server.js';
+import { _deliverSubTaskResult } from '@plugin/modules/chat/chat/chat_streaming.js';
 import { assert } from './_asserts.js';
 import type { FixturePayload, Scenario } from './_asserts.js';
 
@@ -60,9 +61,20 @@ export default ({
       await until(() => task.status !== 'running');
       assert(task.status !== 'running', 'Bieg nie zakończył się po wygaśnięciu.');
       assert(task.result?.question?.text === QUESTION && task.result.question.resolution.kind === 'no-answer', `Pytanie w wyniku: ${JSON.stringify(task.result)}.`);
-      assert(String(task.result?.text).includes(QUESTION) && String(task.result?.text).includes('Powitanie'), `Brak pytania lub dorobku: ${JSON.stringify(task.result)}.`);
+      assert(String(task.result?.text).includes('Powitanie'), `Brak dorobku: ${JSON.stringify(task.result)}.`);
       assert(task.result?.outcome?.completeness === 'partial' && task.partial?.synthesis === 'skipped', `Wynik częściowy: ${JSON.stringify({ result: task.result, partial: task.partial })}.`);
       assert(state.requests === 2, `Liczba zapytań modelu po wygaśnięciu: ${state.requests}, oczekiwano 2.`);
+      const sent: FixturePayload[] = [];
+      const tab = { ...origin, sessionId: origin.tabKey, isActive: true };
+      const view: FixturePayload = { chatTabs: [tab], rollingWindow: { messages: [] }, _autoTurnChainCounts: new Map(),
+        _subTaskTurnPending: false, is_generating: false, _drainSuppressed: false,
+        env: plugin.env, plugin, send_message: (message: FixturePayload) => sent.push(message) };
+      assert(_deliverSubTaskResult.call(view, task) === true, 'Wynik nie został dostarczony do auto-tury.');
+      await until(() => sent.length > 0);
+      const notification = String(sent[0]?.injectedText);
+      const section = notification.match(/\[SUBTASK_QUESTION\]\n([\s\S]*?)\n\[\/SUBTASK_QUESTION \d+\]/)?.[1];
+      assert(section?.includes(QUESTION) && section.includes('Brak odpowiedzi: czas na odpowiedź upłynął.'),
+        `Pytanie lub powód w powiadomieniu: ${notification}.`);
     } finally {
       questions.clock = original;
     }
