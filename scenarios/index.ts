@@ -61,10 +61,15 @@ import s52 from './52_stop_w_kolejce.js';
 import s53 from './53_pozny_wynik.js';
 import s54 from './54_zapis_raz_i_izolacja.js';
 import s55 from './55_stop_w_kolejce_puli.js';
+import s56 from './56_pytanie_odpowiedz.js';
+import s57 from './57_pytanie_timeout.js';
+import s58 from './58_pytanie_stop.js';
+import s59 from './59_dwa_pytania.js';
+import s60 from './60_pytanie_blokujace.js';
 
 export const SCENARIOS = [
   s01, s02, s03, s04, s05, s06, s07, s08, s09, s10, s11, s12, s13, s14,
   s25, s26, s27, s28, s29, s30, s31, s32, s33, s34, s35, s36, s37, s38, s39,
   s40, s41, s42, s43, s44, s45, s46, s47, s48,
-  s49, s50, s51, s52, s53, s54, s55,
+  s49, s50, s51, s52, s53, s54, s55, s56, s57, s58, s59, s60,
 ];

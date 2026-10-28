@@ -51,7 +51,7 @@ PKM_ASSISTANT_ROOT=/sciezka/do/pluginu npm run scenarios   # plugin gdzie indzie
 ```bash
 npm run harness              # build + dry-boot: plugin wstaje w Node, raport DoD (bez modelu)
 npm run selftest             # pełny cykl pętli z fake-serwerem SSE (offline, bez klucza, 0 kosztów)
-npm run scenarios            # 44 scenariusze-łamacze [OFFLINE deterministyczny] (regression suite)
+npm run scenarios            # 50 scenariuszy-łamaczy [OFFLINE deterministyczny] (regression suite)
 npm run scenarios:live       # te same scenariusze na ŻYWYM DeepSeeku (wymaga klucza, płatne grosze)
 npm run build                # sam build (dist/)
 npm run build:companion      # build wtyczki-nosiciela CLI (dist/companion/) — patrz niżej
@@ -244,7 +244,7 @@ jest niedeterministyczny i to jest OK. Dziwne zachowanie modelu przy zielonych i
 **Zasada znalezisk:** jeśli scenariusz obnaża buga PRODUKCJI — scenariusz zostaje RED
 z dowodem (fragment trace + stan fs). NIE naprawiamy produkcji „przy okazji" w harnessie.
 
-Pierwsza fala (FAZA C, numeracja 01-14): 14 z 44 scenariuszy w domyślnej bramce (reszta niżej):
+Pierwsza fala (FAZA C, numeracja 01-14): 14 z 50 scenariuszy w domyślnej bramce (reszta niżej):
 smoke pętli · backstop · izolacja `.pkm-assistant` · No-Go · create-only pamięci ·
 edge+deny · yolo-nie-omija-uprawnień · artefakt plan (create+patch) · todo (create+check) ·
 sklejone tool_calls DeepSeeka (deterministyczna reprodukcja historycznego buga E2.1) ·
@@ -315,6 +315,11 @@ Do tego **14 pisarze sesji (S36)** — event-log przeżywa autozapis i restart (
   `check: matches`; blok `subagent_call` trafia do sesji zlecającego, bez pliku sesji obcego agenta.
 - **55 Stop w kolejce puli**: dwa zadania przy szerokości puli 1, Stop drugiego przed startem,
   brak auto-tury po Stopie i oczekiwanie wyniku w kolejce oraz odmowa inicjalizacji oczekującego zadania.
+- **56 pytanie i odpowiedź**: pytanie z tła budzi prowadzącego, odpowiedź trafia do tego samego wątku, a wynik wraca raz.
+- **57 brak odpowiedzi**: sterowany zegar pytania odmierza 300000 ms; wynik częściowy zachowuje pytanie i dorobek bez syntezy.
+- **58 Stop podczas pytania**: wynik zachowuje pytanie i dorobek, a po Stopie nie ma kolejnej auto-tury.
+- **59 dwa pytania**: dwa oczekujące suby dostają właściwe odpowiedzi, a tury prowadzącego nie nakładają się.
+- **60 delegacja blokująca**: kontynuacja oddaje pokwitowanie z pytaniem i przechodzi do tła, skąd wraca wynik.
 
 Asercje dostają też `plugin` — ŻYWY obiekt pluginu tego biegu (przed cleanupem). Scenariusz może
 po turze wołać produkcyjne API na tym samym temp-vaultcie (`14_sesja_pisarze` symuluje tak autozapis

@@ -57,6 +57,8 @@ export interface ApprovalRecord {
 }
 
 export interface ExploratoryTurnOptions {
+  /** Adres sesji właściciela delegacji, jak w wywołaniu narzędzia z czatu. */
+  origin?: { agentName: string; sessionPath: string; sessionEpoch: string; tabKey?: string };
   agentName?: string | null;
   prompt: string;
   autonomy?: string;
@@ -260,6 +262,7 @@ export async function runExploratoryTurn(plugin: HarnessRuntime, opts: Explorato
     awaitSubTasks = true,
     awaitSubTasksTimeoutMs = DEFAULT_SUBTASK_WAIT_MS,
     shouldAbort,
+    origin,
   } = opts;
 
   const autonomy = normalizeAutonomy(rawAutonomy);
@@ -338,7 +341,7 @@ export async function runExploratoryTurn(plugin: HarnessRuntime, opts: Explorato
     model: model as unknown as RunAgentLoopOptions['model'],
     store,
     resolveTools: () => resolveToolsForAgent(plugin, agent),
-    executeToolCall: (toolCall: ParsedToolCall) => plugin.mcpClient.executeToolCall(toolCall, agent.name, { autonomy }),
+    executeToolCall: (toolCall: ParsedToolCall) => plugin.mcpClient.executeToolCall(toolCall, agent.name, { autonomy, ...(origin ? { origin } : {}) }),
     trace,
     limits,
     modelOptions: { agentName: agent.name, agent: agent.name },
