@@ -248,8 +248,8 @@ Pierwsza fala (FAZA C, numeracja 01-14): 14 z 55 scenariuszy w domyślnej bramce
 smoke pętli · backstop · izolacja `.pkm-assistant` · No-Go · create-only pamięci ·
 edge+deny · yolo-nie-omija-uprawnień · artefakt plan (create+patch) · todo (create+check) ·
 sklejone tool_calls DeepSeeka (deterministyczna reprodukcja historycznego buga E2.1) ·
-**11 głębia delegacji** (sub próbuje zlecać dalej → strażnik `max_delegation_depth` odmawia,
-drugi runner nie startuje) · **12 pętla poczty** (`kom_send`: rate-limit + licznik odbić `hop`,
+**11 głębia delegacji** (domyślnie sub deleguje do wnuka, który nie może delegować dalej;
+przy jawnym limicie 1 już sub nie może delegować) · **12 pętla poczty** (`kom_send`: rate-limit + licznik odbić `hop`,
 a duch z `komunikator_visible:false` daje ten sam błąd co literówka i nie wycieka na listę) ·
 **13 external RED** (narzędzie cudzego serwera MCP = obowiązkowa zgoda w `edge`, a do serwera
 nie wychodzi żaden znacznik `_invocation*` — sprawdzane na atrapie klienta MCP przez `setup()`).
