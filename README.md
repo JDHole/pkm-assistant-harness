@@ -258,6 +258,11 @@ Scenariusze 11-13 są **offline-only** (`liveSkip`): wymagają wymuszenia zachow
 żywy model decyduje sam (wywołanie `delegate` z wnętrza suba, zaprojektowana sekwencja wysyłek,
 atrapa zewnętrznego serwera).
 
+Dependency-plan scenarios 66/67 also restore the real session journal while B is still running.
+They check an interrupted, inert group with A's completed material and all three strip rows,
+then finish the original execution and check the readable aggregate notification, blocked_by
+and the instruction to continue the conversation. Model responses remain controlled by HTTP barriers.
+
 Do tego **14 pisarze sesji (S36)** — event-log przeżywa autozapis i restart (`AgentMemory.saveSession` + świeża instancja `AgentMemory` na tym samym temp-vaultcie).
 
 **Poligon F1 (numeracja 25+):**

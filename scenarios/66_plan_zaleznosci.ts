@@ -2,7 +2,9 @@ import { errorTurn, textTurn } from '../mock/fake-llm-server.js';
 import deepResearch from './32_deep_research.js';
 import { assert } from './_asserts.js';
 import type { FixturePayload, Scenario } from './_asserts.js';
-import type { SubTaskRegistry, SubTaskNotice, SubTaskPlanRuntime } from '@plugin/modules/sub-agents/index.js';
+import { SubTaskRegistry, SubTaskNotifier, formatPlanResult, buildStripModel } from '@plugin/modules/sub-agents/index.js';
+import type { SubTaskNotice, SubTaskPlanRuntime } from '@plugin/modules/sub-agents/index.js';
+import { getLocale, setLocale } from '@plugin/core/i18n/index.js';
 
 function barrier() {
   let release!: () => void;
@@ -30,7 +32,7 @@ export function dependencyPlanScenario(failA: boolean): Scenario {
   return {
     file: failA ? '67_plan_awaria' : '66_plan_zaleznosci',
     name: failA ? 'dependency plan failure' : 'dependency plan success',
-    opis: 'A and B run behind barriers; C requires both settled results; one aggregate notice',
+    opis: 'A/B barriers, inert history restoration, C dependency inputs and one readable aggregate notice',
     agent: 'Tester', autonomy: 'yolo',
     liveSkip: 'Requires deterministic response barriers and a controlled HTTP failure.',
     fixtures: deepResearch.fixtures,
@@ -90,6 +92,25 @@ export function dependencyPlanScenario(failA: boolean): Scenario {
           ? '["error","running","blocked"]' : '["done","running","waiting_dependencies"]')
           && JSON.stringify(starts.slice().sort()) === '["A","B"]',
         `C must not run after A alone: ${JSON.stringify(runtime.nodes)}`);
+        await registry.flushHistory();
+        const saved = await memory.loadActiveSession(sessionPath);
+        const restored = new SubTaskRegistry(), restoredNotifier = new SubTaskNotifier({ registry: restored });
+        try {
+          restored.importHistory(saved.subTaskHistory ?? [], origin);
+          const plan = restored.listPlans(origin)[0];
+          assert(plan?.status === 'interrupted'
+            && JSON.stringify(plan.nodes.map(node => [node.id, node.state.kind])) === (failA
+              ? '[["A","error"],["B","interrupted"],["C","blocked"]]'
+              : '[["A","done"],["B","interrupted"],["C","not_executed"]]'), 'Restart lost the plan state');
+          const rows = buildStripModel({ plans: restored.listPlans(origin), tasks: restored.list(), threads: restored.listThreads(origin), ...origin });
+          assert(rows.filter(row => row.kind === 'plan-node').length === 3
+            && (failA || rows.find(row => row.kind === 'plan-node' && row.node.id === 'A')?.outcome === 'wynik A'),
+          'Restored strip lost nodes or completed material');
+          const resumed: string[] = [];
+          plan.start(async id => { resumed.push(id); return { kind: 'done', material: 'unexpected restart' }; });
+          await plan.completion;
+          assert(JSON.stringify([resumed, restoredNotifier.pendingNotices()]) === '[[],[]]', 'Restore resumed work or delivered a notice');
+        } finally { restoredNotifier.dispose(); restored.dispose(); }
         gates.B.release();
         await bounded(runtime.completion); await bounded(delivered.promise);
         assert(notices.length === 1 && notices[0].kind === 'plan-result', `Expected one plan notice: ${JSON.stringify(notices)}`);
@@ -101,6 +122,14 @@ export function dependencyPlanScenario(failA: boolean): Scenario {
           ? '[["A","error"],["B","done"],["C","blocked"]]' : '[["A","done"],["B","done"],["C","done"]]'),
         `Wrong terminal node table: ${JSON.stringify(result.nodes)}`);
         assert(result.nodes[1].state.material === 'wynik B', 'Independent B result was lost');
+        const locale = getLocale();
+        let text: string;
+        try { setLocale('en'); text = formatPlanResult(result, 60000); } finally { setLocale(locale); }
+        assert(text.startsWith(`[SYSTEM NOTIFICATION] Plan result ${receipt.plan_id}\n<vault_content source="plan_result:${failA ? 'partial' : 'completed'}">\n${failA ? 'partial result' : 'completed'}\n`)
+          && text.includes('\nB: finished | result B (summary): wynik B | blocked_by: -\n')
+          && text.includes(failA ? '\nC: blocked | result C (summary): - | blocked_by: A\n' : '\nC: finished | result C (summary): wynik C | blocked_by: -\n')
+          && text.endsWith('Pick the thread back up - use this result to finish the job. If you started more tasks, their results will arrive separately; do not guess their content.'),
+        `Plan notification is not readable: ${text}`);
         if (failA) {
           assert(JSON.stringify(result.blocked) === '[{"id":"C","blocked_by":["A"]}]'
             && result.nodes[2].state.kind === 'blocked' && JSON.stringify(result.nodes[2].state.blocked_by) === '["A"]'
