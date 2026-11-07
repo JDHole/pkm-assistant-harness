@@ -1,3 +1,4 @@
+import { sessionOrigin } from './_sessionOrigin.js';
 /**
  * _runner.js — sterownik scenariuszy-łamaczy „Szklane Pudło" (S26 FAZA C).
  *
@@ -189,7 +190,9 @@ async function runOne(scenario: Scenario): Promise<RunnerPayload> {
     for (const rel of scenario.snapshotFiles || []) before[rel] = snapshot(tempRoot!, rel);
 
     const runId = new Date().toISOString().replace(/[:.]/g, '-').slice(11, 19);
+    const origin = await sessionOrigin(plugin, agentName);
     const turn = await runExploratoryTurn(plugin, {
+      origin,
       agentName,
       prompt: flags.live ? (scenario.livePrompt || scenario.opis) : (scenario.livePrompt || scenario.opis || 'wykonaj zadanie'),
       autonomy: scenario.autonomy || 'edge',

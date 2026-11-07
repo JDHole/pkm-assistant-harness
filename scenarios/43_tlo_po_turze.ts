@@ -1,3 +1,4 @@
+import { sessionOrigin } from './_sessionOrigin.js';
 /**
  * 43_tlo_po_turze — bieg w tle należy do TURY, która go zleciła, a nie do tego, co user
  * akurat ma na wierzchu (klaster K4: AUD-security-091 + AUD-security-050).
@@ -17,7 +18,7 @@
  * Inwarianty:
  *   1. dziennik biegu (`subagent_call`) jest w `sessions/active/` TESTERA — właściciela zlecenia,
  *   2. Podglądacz nie ma ANI JEDNEGO pliku sesji (cudzy bieg go nie dotknął),
- *   3. `write` suba PYTAŁ o zgodę — czyli sub jechał autonomią `edge` zamrożoną przy zleceniu
+ *   3. `write` suba proponuje bez zgody; operacja poza kopią pyta w zamrożonym `edge`
  *      (gdyby czytał lustro, byłoby `yolo` = zero pytań),
  *   4. przełączenie naprawdę się odbyło (globalny aktywny agent to Podglądacz).
  *
@@ -68,6 +69,7 @@ function agentYaml(name: string, opis: string): string {
     '  - vault',
     '  - memory',
     '  - core',
+    '  - web',
     '',
   ].join('\n');
 }
@@ -89,6 +91,9 @@ export default ({
   ],
 
   async setup({ plugin }) {
+    stan.zadaniaSuba = 0; stan.przelaczen = 0;
+    // Exercise the external-operation approval gate without making a network request.
+    (plugin.env.settingsStore.raw.pkmAssistant.webSearch ??= {}).enabled = false;
     assert(plugin?.subTaskRegistry, 'Brak plugin.subTaskRegistry — bez rejestru delegacja nie poszłaby w tło.');
     assert(
       plugin.agentManager?.getAgent?.(PODGLADACZ),
@@ -106,10 +111,11 @@ export default ({
   offlineScript: (ctx: FixturePayload) => {
     if (jestPodzapytaniem(ctx.request)) {
       stan.zadaniaSuba += 1;
-      // Pierwsza iteracja suba: zapis (RED → w `edge` MUSI zapytać o zgodę).
+      // Pierwsza iteracja suba: propozycja w kopii, bez zgody plikowej.
       if (lastToolResults(ctx.request).length === 0) {
         return toolCallTurn('write', { path: PLIK_SUBA, content: 'ustalenia suba', mode: 'create' });
       }
+      if (stan.zadaniaSuba === 2) return toolCallTurn('web_search', { query: 'kontrola autonomii poza kopią' });
       return textTurn(ODPOWIEDZ_SUBA);
     }
     // Pętla główna: zlecenie, potem domknięcie tury na pokwitowaniu.
@@ -155,16 +161,27 @@ export default ({
       `PRZECIEK MIĘDZY AGENTAMI: bieg Testera dopisał się do sesji Podglądacza (${obce.join(', ')}).`,
     );
 
-    // ── 3. Autonomia zamrożona przy zleceniu (edge pyta, yolo nie) ──
-    const pytania = (approvals || []).filter((a: FixturePayload) => /write/.test(String(a.tool || '')));
-    assert(
-      pytania.length >= 1,
-      'Sub NIE zapytał o zgodę na write — czyli dokończył bieg w trybie `yolo` z globalnego lustra '
-      + `zamiast w \`edge\` z tury zlecającej. Zarejestrowane pytania: ${JSON.stringify(approvals)}`,
-    );
-    assert(
-      pytania.every((a: FixturePayload) => a.agent === WLASCICIEL),
-      `Pytanie o zgodę przyszło w imieniu innego agenta niż właściciel biegu: ${JSON.stringify(pytania)}`,
-    );
+    // Proposing content requires no file consent. Non-file operations still use edge.
+    const beforeAccept = [...approvals];
+    assert(beforeAccept.filter((a: FixturePayload) => /write/.test(a.tool)).length === 0,
+      `Sama propozycja nie pyta o zapis: ${JSON.stringify(beforeAccept)}`);
+    const outside = beforeAccept.filter((a: FixturePayload) => a.tool === 'web.search');
+    assert(outside.length === 1 && outside[0].agent === WLASCICIEL,
+      `Operacja poza kopią zachowuje edge i właściciela: ${JSON.stringify(beforeAccept)}`);
+    const origin = await sessionOrigin(plugin, WLASCICIEL);
+    const call = (args: FixturePayload) => plugin.mcpClient.executeToolCall(
+      { name: 'subagent_changes', arguments: args }, WLASCICIEL, { autonomy: 'edge', origin });
+    const listed = await call({ action: 'list' });
+    assert(listed.kind === 'listed' && listed.changes.length === 1, `Jedna propozycja: ${JSON.stringify(listed)}`);
+    const change = listed.changes[0];
+    assert(change.path === PLIK_SUBA && change.status === 'pending', 'Propozycja właściwego pliku czeka na przegląd');
+    assert(!listVaultFiles(vaultRoot, 'Notatki').includes(PLIK_SUBA), 'Przed przyjęciem plik nie istnieje live');
+    const accepted = await call({ action: 'accept', draft_id: change.draft_id, change_id: change.change_id, revision: change.revision });
+    assert(accepted.kind === 'accepted', `Przyjęcie: ${JSON.stringify(accepted)}`);
+    const pytania = approvals.filter((a: FixturePayload) => /write/.test(a.tool));
+    assert(pytania.length === 1 && pytania.every((a: FixturePayload) => a.agent === WLASCICIEL),
+      `Zgoda przy przyjęciu należy do właściciela: ${JSON.stringify(approvals)}`);
+    assert(readVaultFile(vaultRoot, PLIK_SUBA) === 'ustalenia suba', 'Przyjęcie stosuje literalną propozycję');
+
   },
 } satisfies Scenario);

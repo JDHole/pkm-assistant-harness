@@ -51,7 +51,7 @@ PKM_ASSISTANT_ROOT=/sciezka/do/pluginu npm run scenarios   # plugin gdzie indzie
 ```bash
 npm run harness              # build + dry-boot: plugin wstaje w Node, raport DoD (bez modelu)
 npm run selftest             # pełny cykl pętli z fake-serwerem SSE (offline, bez klucza, 0 kosztów)
-npm run scenarios            # 57 scenariuszy-łamaczy [OFFLINE deterministyczny] (regression suite)
+npm run scenarios            # 63 scenariuszy-łamaczy [OFFLINE deterministyczny] (regression suite)
 npm run scenarios:live       # te same scenariusze na ŻYWYM DeepSeeku (wymaga klucza, płatne grosze)
 npm run build                # sam build (dist/)
 npm run build:companion      # build wtyczki-nosiciela CLI (dist/companion/) — patrz niżej
@@ -244,7 +244,7 @@ jest niedeterministyczny i to jest OK. Dziwne zachowanie modelu przy zielonych i
 **Zasada znalezisk:** jeśli scenariusz obnaża buga PRODUKCJI — scenariusz zostaje RED
 z dowodem (fragment trace + stan fs). NIE naprawiamy produkcji „przy okazji" w harnessie.
 
-Pierwsza fala (FAZA C, numeracja 01-14): 14 z 57 scenariuszy w domyślnej bramce (reszta niżej):
+Pierwsza fala (FAZA C, numeracja 01-14): 14 z 63 scenariuszy w domyślnej bramce (reszta niżej):
 smoke pętli · backstop · izolacja `.pkm-assistant` · No-Go · create-only pamięci ·
 edge+deny · yolo-nie-omija-uprawnień · artefakt plan (create+patch) · todo (create+check) ·
 sklejone tool_calls DeepSeeka (deterministyczna reprodukcja historycznego buga E2.1) ·
@@ -332,6 +332,20 @@ Do tego **14 pisarze sesji (S36)** — event-log przeżywa autozapis i restart (
   niezależne B kończy normalnie. Raport blokady wraca do prowadzącego, który decyduje o ponowieniu.
   Oba scenariusze są offline-only i używają publicznego MCP, rejestru oraz notifiera; odbiornik zastępuje UI czatu.
 
+**Kopie robocze subów 2.4.7 (P6, offline):**
+
+- **68 zapis do kopii** — sub czyta „Szkic”, vault zachowuje „Baza”.
+- **69 dwa suby, jedna ścieżka** — niezależne A/B; przyjęcie A powoduje konflikt B.
+- **70 edycja bazy** — „Kuba” blokuje przyjęcie; pierwsza baza przetrwa kolejne zapisy.
+- **71 przyjęcie i odrzucenie** — osobne decyzje X/Y, pokwitowanie i trwały ponowny odczyt.
+- **72 restart** — nowa instancja pluginu nad tym samym temp-vaultem odnajduje kopie bez startu subów; przyjęcie nadal działa.
+- **73 plan i Stop** — C czyta zamknięte A/B i zapisuje własną kopię; Stop zachowuje dorobek, blokuje następnika i późne write.
+
+Scenariusz **54** nadal sprawdza pojedynczy zapis, właściciela sesji i dorobek, teraz w kopii.
+Atrapa desktopowego hosta udostępnia `window.require`, aby produkcyjny magazyn mógł
+atomowo publikować pliki w temp-vaulcie. Nowe scenariusze czekają na zdarzenia/barierę,
+sprawdzają zwrotki prawdziwego MCP i odtwarzają magazyn z dysku przez publiczne barrele.
+
 Scenariusze 56 i 59 używają produkcyjnego dostawcy powiadomień, `send_message`,
 `append_message`, rezerwacji, pętli, egzekucji narzędzi i finalizacji. Gospodarz Node nie jest
 pełnym `ChatView`: ma atrapę DOM i pamięci sesji, a callbacki prezentacji narzędzi
@@ -376,3 +390,12 @@ stanie fs + treści wyniku, nie na statusie tool.post.
   jak w produkcji bez konfiguracji). Scenariusz, który POTRZEBUJE żywej semantyki, podstawia
   własny model pod `env.embeddings.default` i stawia swój `VaultIndexer`
   (wzór: `37_semantyka_indeks`). Bieg z prawdziwym providerem = osobna decyzja (ew. Ollama).
+
+
+Runda poprawek 1 dla 2.4.7 dodaje scenariusze 74 (przywrócona sesja bez epoki →
+produkcyjne send_message → zapis workera do kopii → ponowny odczyt epoki) i 75
+(delegate → sub_agent task → odczyt poprzedniej kopii i nowy szkic). Łącznie 65
+scenariuszy offline. `_runner` i 51 przekazują origin rzeczywistej trwałej sesji.
+43 sprawdza brak zgody na propozycję, zgodę przy przyjęciu i autonomię operacji poza
+kopią po przełączeniu agenta. Scenariusze 68–73 i kontrola jednokrotnego zapisu w 54
+pozostają częścią bramki. Wszystko działa w Node, bez Obsidiana/CDP.

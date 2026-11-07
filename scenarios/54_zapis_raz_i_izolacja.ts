@@ -11,6 +11,7 @@
  *   3. blok `subagent_call` trafia do sesji właściciela, a Podglądacz nie ma sesji.
  */
 import fs from 'node:fs';
+import { disk } from './_drafts.js';
 import path from 'node:path';
 import { textTurn, toolCallTurn, lastToolResults } from '../mock/fake-llm-server.js';
 import { assert, listVaultFiles, readVaultFile, subTraceEvents } from './_asserts.js';
@@ -95,7 +96,10 @@ export default ({
   async asserts({ result, plugin, vaultRoot }: FixturePayload) {
     assert(result?.finalText === 'Zlecenie przekazane do suba.', `Odpowiedź tury głównej=${JSON.stringify(result?.finalText)}.`);
     assert(state.writes === 1, `Licznik wywołań write=${state.writes}, oczekiwano 1.`);
-    assert(fs.readFileSync(path.join(vaultRoot, FILE), 'utf8') === CONTENT, `Treść ${FILE} nie jest literalnym wynikiem zapisu.`);
+    assert(!fs.existsSync(path.join(vaultRoot, FILE)), `Zapis suba zmienił vault: ${FILE}.`);
+    const fresh = await disk(plugin.app);
+    const draft = fresh.store.list().find(item => item.changes.some(change => change.path === FILE));
+    assert(draft && await fresh.view(draft.draftId).read(FILE) === CONTENT, `Kopia ${FILE} nie zawiera literalnego wyniku zapisu.`);
     assert(state.switched === 1 && plugin.agentManager.getActiveAgent()?.name === OTHER, `Przełączenie na ${OTHER} nie zaszło: ${state.switched}.`);
     const tasks = plugin.subTaskRegistry.list();
     const task = tasks[0];

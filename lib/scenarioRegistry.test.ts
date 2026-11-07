@@ -91,3 +91,24 @@ test('index.ts: liczba wpisów SCENARIOS == liczba plików scenariuszy na dysku'
     const onDiskCount = scenarioFilesOnDisk().length;
     t.is(registeredCount, onDiskCount, `SCENARIOS ma ${registeredCount} wpisów, na dysku jest ${onDiskCount} plików scenariuszy.`);
 });
+
+test('P6: osiem scenariuszy kopii jest zarejestrowanych raz i używa publicznych barreli', t => {
+    const src = readIndexSource();
+    const registered = parseRegisteredIdents(src);
+    const imports = parseImports(src);
+    const sources: string[] = [fs.readFileSync(path.join(SCENARIOS_DIR, '_drafts.ts'), 'utf8')];
+    for (const number of [68, 69, 70, 71, 72, 73, 74, 75]) {
+        const entry = imports.find(item => item.ident === `s${number}`);
+        t.truthy(entry, `Brak scenariusza ${number}`);
+        t.is(registered.filter(id => id === `s${number}`).length, 1);
+        const source = fs.readFileSync(path.join(SCENARIOS_DIR, `${entry!.file}.ts`), 'utf8');
+        t.regex(source, /async asserts\(/, 'Scenariusz musi sprawdzać efekt');
+        sources.push(source);
+    }
+    for (const source of sources) {
+        for (const match of source.matchAll(/from ['"](@plugin\/[^'"]+)['"]/g)) {
+            t.regex(match[1], /^@plugin\/(?:modules\/[^/]+|core)\/index\.js$/, 'Bez prywatnych importów pluginu');
+        }
+    }
+    t.regex(sources[0], /liveSkip:\s*'[^']{10,}'/, 'Wspólny kontrakt deklaruje powód offline-only');
+});

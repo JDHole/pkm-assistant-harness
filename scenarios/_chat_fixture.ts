@@ -1,6 +1,6 @@
 /** Minimalny gospodarz czatu w Node. DOM i zapis sesji są atrapami I/O. */
 import { RollingWindow } from '@plugin/modules/chat/chat/RollingWindow.js';
-import { append_message } from '@plugin/modules/chat/chat/chat_messages.js';
+import { append_message, _renderUserText } from '@plugin/modules/chat/chat/chat_messages.js';
 import { send_message, set_generating, _finalizeTurn, _releaseStreamCtx, _drainSubTasks, _chatExecuteToolCall, _deliverSubTaskQuestion, _deliverSubTaskResult } from '@plugin/modules/chat/chat/chat_streaming.js';
 import { createModelForRole } from '@plugin/modules/models/index.js';
 import { createMockEl } from '../test-support/dom-shim.js';
@@ -29,6 +29,7 @@ export function chatFixture(plugin: FixturePayload, origin: FixturePayload, befo
     _streamCtxMap: new Map(), _agentStates: new Map(), _questionAutoTurn: { kind: 'idle' },
     _subTaskTurnPending: false, is_generating: false, _drainSuppressed: false, currentAutonomy: 'yolo',
     append_message: (...args: FixturePayload[]) => append_message.call(view, ...args as [any, any, any, any]),
+    _renderUserText,
     updateTokenCounter() {}, scrollToBottom() {}, _buildActiveNoteContext: async () => null,
     appendToActiveSession: async (event: FixturePayload) => { events.push(event); },
     async send_message(opts: FixturePayload) {

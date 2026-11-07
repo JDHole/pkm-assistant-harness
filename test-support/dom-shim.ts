@@ -26,6 +26,8 @@
  * Import tego pliku instaluje globale (side-effect). Harness importuje go PIERWSZY w swoich wejściach.
  */
 
+import fs from 'node:fs';
+
 /** Callback w stylu Obsidiana: `createEl('div', {…}, el => …)`. */
 type ElCallback = (el: MockEl) => void;
 
@@ -430,6 +432,13 @@ export function installDomShim() {
   if (typeof g.window === 'undefined') {
     g.window = globalThis;
   }
+  // Desktop Obsidiana udostępnia Node przez window.require. P5 używa prawdziwego
+  // fs do atomowej publikacji kopii w temp-vaulcie (linkSync + fsyncSync).
+  const win = g.window as GlobalBag;
+  if (typeof win.require === 'undefined') win.require = (id: string) => {
+    if (id === 'fs' || id === 'node:fs') return fs;
+    throw new Error(`Harness window.require: unsupported module ${id}`);
+  };
   if (typeof g.open === 'undefined') {
     g.open = () => null;
   }

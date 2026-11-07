@@ -1,3 +1,4 @@
+import { sessionOrigin } from './_sessionOrigin.js';
 /**
  * 51_blad_narzedzia_suba: nieudane narzędzie jest widoczne, choć sub odpowie normalnie.
  *
@@ -53,7 +54,7 @@ export default ({
     const response = await plugin.mcpClient.executeToolCall(
       { id: 'tool-error', name: 'delegate', arguments: { task: 'Zapisz nową notatkę i opisz wynik.', aspect: 'worker' } },
       'Tester',
-      { delegationDepth: 1, autonomy: 'yolo' },
+      { delegationDepth: 1, autonomy: 'yolo', origin: await sessionOrigin(plugin, 'Tester') },
     );
     const task = plugin.subTaskRegistry.list().at(-1);
     assert(response.success === true, `Odpowiedź delegate success=${response.success}; oczekiwano finished.`);
