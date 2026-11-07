@@ -51,7 +51,7 @@ PKM_ASSISTANT_ROOT=/sciezka/do/pluginu npm run scenarios   # plugin gdzie indzie
 ```bash
 npm run harness              # build + dry-boot: plugin wstaje w Node, raport DoD (bez modelu)
 npm run selftest             # pełny cykl pętli z fake-serwerem SSE (offline, bez klucza, 0 kosztów)
-npm run scenarios            # 55 scenariuszy-łamaczy [OFFLINE deterministyczny] (regression suite)
+npm run scenarios            # 57 scenariuszy-łamaczy [OFFLINE deterministyczny] (regression suite)
 npm run scenarios:live       # te same scenariusze na ŻYWYM DeepSeeku (wymaga klucza, płatne grosze)
 npm run build                # sam build (dist/)
 npm run build:companion      # build wtyczki-nosiciela CLI (dist/companion/) — patrz niżej
@@ -244,7 +244,7 @@ jest niedeterministyczny i to jest OK. Dziwne zachowanie modelu przy zielonych i
 **Zasada znalezisk:** jeśli scenariusz obnaża buga PRODUKCJI — scenariusz zostaje RED
 z dowodem (fragment trace + stan fs). NIE naprawiamy produkcji „przy okazji" w harnessie.
 
-Pierwsza fala (FAZA C, numeracja 01-14): 14 z 55 scenariuszy w domyślnej bramce (reszta niżej):
+Pierwsza fala (FAZA C, numeracja 01-14): 14 z 57 scenariuszy w domyślnej bramce (reszta niżej):
 smoke pętli · backstop · izolacja `.pkm-assistant` · No-Go · create-only pamięci ·
 edge+deny · yolo-nie-omija-uprawnień · artefakt plan (create+patch) · todo (create+check) ·
 sklejone tool_calls DeepSeeka (deterministyczna reprodukcja historycznego buga E2.1) ·
@@ -325,6 +325,12 @@ Do tego **14 pisarze sesji (S36)** — event-log przeżywa autozapis i restart (
 - **63 zwykła delegacja blokująca**: kontynuacja bez pytania oddaje wynik w zwrotce.
 - **64 ask_user bez subów**: odpowiedź użytkownika dociera do prowadzącego.
 - **65 Stop zwykłego suba**: zatrzymanie biegu bez pytania nie budzi prowadzącego.
+- **66 plan zależności (2.4.6)**: A/B pracują równolegle, C czeka na oba; dostaje pełne krótkie
+  wyniki albo jawnie przycięte do wspólnego limitu 4096 znaków. Sprawdza oba porządki kończenia,
+  stany rejestru i doręczenie każdego wyniku raz z raportem planu, bez dodatkowego zbiorczego powiadomienia.
+- **67 plan awaria (2.4.6)**: błąd HTTP modelu A blokuje C z przyczyną A i bez uruchomienia modelu;
+  niezależne B kończy normalnie. Raport blokady wraca do prowadzącego, który decyduje o ponowieniu.
+  Oba scenariusze są offline-only i używają publicznego MCP, rejestru oraz notifiera; odbiornik zastępuje UI czatu.
 
 Scenariusze 56 i 59 używają produkcyjnego dostawcy powiadomień, `send_message`,
 `append_message`, rezerwacji, pętli, egzekucji narzędzi i finalizacji. Gospodarz Node nie jest

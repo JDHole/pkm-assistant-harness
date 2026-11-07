@@ -6,6 +6,8 @@
 import { toolCallTurn, textTurn, lastToolResults } from '../mock/fake-llm-server.js';
 import { t } from '@plugin/core/i18n/index.js';
 import { getLimits } from '@plugin/config/limits.js';
+import type { MCPClient } from '@plugin/modules/tools/index.js';
+import type { SubTask } from '@plugin/modules/sub-agents/index.js';
 import {
   parseTrace, readVaultFile, toolPosts, toolResult, assertFinalText, loopEnd, assert,
 } from './_asserts.js';
@@ -93,8 +95,9 @@ export default ({
   ],
 
   setup({ plugin }) {
-    const execute = plugin.mcpClient.executeToolCall.bind(plugin.mcpClient);
-    plugin.mcpClient.executeToolCall = (call, agent, options = {}) => execute(call, agent, { ...options, origin: options.origin ?? ORIGIN });
+    const client: MCPClient = plugin.mcpClient;
+    const execute = client.executeToolCall.bind(client);
+    client.executeToolCall = (call, agent, options = {}) => execute(call, agent, { ...options, origin: options.origin ?? ORIGIN });
     seen.phase = 'default'; seen.sub = evidence(); seen.grandchild = evidence();
     seen.limited = evidence(); seen.nestedResult = '';
     // Usuń ewentualny nadpisany limit, aby pierwsza część sprawdzała rzeczywisty default.
@@ -128,7 +131,7 @@ export default ({
       for (let i = 0; i < 200 && !ready(); i++) await new Promise((resolve) => setTimeout(resolve, 25));
     };
     await waitFor(() => !!seen.sub.refusal || (!!seen.nestedResult && !!seen.grandchild.refusal));
-    await waitFor(() => plugin.subTaskRegistry.list().every((task) => !['running', 'queued'].includes(task.status)));
+    await waitFor(() => plugin.subTaskRegistry.list().every((task: SubTask) => !['running', 'queued'].includes(task.status)));
     await plugin.traceLog?.sink?.flush?.();
     const posts = toolPosts(trace).filter((p) => p.tool === 'delegate');
     assert(posts.length === 1, `Oczekiwano 1 delegacji głównej, jest ${posts.length}.`);
@@ -169,7 +172,7 @@ export default ({
     );
     assert(limitedResult.success === true, `Delegacja przy limicie 1 nie powiodła się: ${JSON.stringify(limitedResult)}`);
     await waitFor(() => !!seen.limited.refusal);
-    await waitFor(() => plugin.subTaskRegistry.list().every((task) => !['running', 'queued'].includes(task.status)));
+    await waitFor(() => plugin.subTaskRegistry.list().every((task: SubTask) => !['running', 'queued'].includes(task.status)));
     await plugin.traceLog?.sink?.flush?.();
     assertBlocked(seen.limited, 'Sub przy limicie 1');
     raw = readVaultFile(vaultRoot, TRACE_REL);
