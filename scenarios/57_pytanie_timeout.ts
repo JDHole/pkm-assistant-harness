@@ -68,9 +68,11 @@ export default ({
       const tab = { ...origin, sessionId: origin.tabKey, isActive: true };
       const view: FixturePayload = { chatTabs: [tab], rollingWindow: { messages: [] }, _autoTurnChainCounts: new Map(),
         _subTaskTurnPending: false, is_generating: false, _drainSuppressed: false,
-        env: plugin.env, plugin, send_message: (message: FixturePayload) => sent.push(message) };
-      assert(_deliverSubTaskResult.call(view, task) === true, 'Wynik nie został dostarczony do auto-tury.');
+        env: plugin.env, plugin, send_message: (message: FixturePayload) => { sent.push(message); message.onAccepted?.(); } };
+      _deliverSubTaskResult.call(view, task);
       await until(() => sent.length > 0);
+      assert(sent.length === 1 && view._autoTurnChainCounts.get(origin.agentName) === 1,
+        'Wynik nie został dostarczony i przyjęty do auto-tury.');
       const notification = String(sent[0]?.injectedText);
       const section = notification.match(/\[SUBTASK_QUESTION\]\n([\s\S]*?)\n\[\/SUBTASK_QUESTION \d+\]/)?.[1];
       assert(section?.includes(QUESTION) && section.includes('Brak odpowiedzi: czas na odpowiedź upłynął.'),

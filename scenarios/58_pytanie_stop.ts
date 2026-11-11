@@ -49,7 +49,7 @@ export default ({
     const sent: FixturePayload[] = [];
     const tab = { ...origin, sessionId: origin.tabKey, isActive: true };
     const view: FixturePayload = { chatTabs: [tab], rollingWindow: { messages: [] }, _autoTurnChainCounts: new Map(),
-      _subTaskTurnPending: false, is_generating: false, _drainSuppressed: true,
+      _subTaskTurnPending: false, is_generating: false, _drainSuppressed: false,
       env: plugin.env, plugin, send_message: (message: FixturePayload) => sent.push(message) };
     assert(registry.requestStop(id, 'user') === true, 'Stop nie został przyjęty.');
     await until(() => task.status !== 'running');

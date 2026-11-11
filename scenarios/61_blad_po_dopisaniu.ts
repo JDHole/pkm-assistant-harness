@@ -1,8 +1,6 @@
 /** Błąd renderowania po dopisaniu pytania nie może ponowić dostarczenia. */
 import { textTurn } from '../mock/fake-llm-server.js';
-import { RollingWindow } from '@plugin/modules/chat/chat/RollingWindow.js';
-import { append_message } from '@plugin/modules/chat/chat/chat_messages.js';
-import { _deliverSubTaskQuestion, send_message } from '@plugin/modules/chat/chat/chat_streaming.js';
+import { chatFixture } from './_chat_fixture.js';
 import { assert } from './_asserts.js';
 import type { FixturePayload, Scenario } from './_asserts.js';
 
@@ -16,20 +14,8 @@ export default ({
   async asserts({ plugin }: FixturePayload) {
     const registry = plugin.subTaskRegistry;
     const notifier = plugin.subTaskNotifier;
-    const window = new RollingWindow();
-    const tab = { ...origin, sessionId: origin.tabKey, isActive: true };
-    const agentManager = { getActiveAgent: () => ({ name: 'Tester' }),
-      getAgentMemory: () => ({ activeSessionPath: origin.sessionPath, sessionEpoch: origin.sessionEpoch }) };
-    const view: FixturePayload = {
-      chatTabs: [tab], rollingWindow: window, plugin: { subTaskRegistry: registry, subTaskNotifier: notifier, agentManager },
-      env: plugin.env, _autoTurnChainCounts: new Map(), _preparingTurns: new Map(),
-      _subTaskTurnPending: false, is_generating: false, _drainSuppressed: false,
-      append_message: (...args: FixturePayload[]) => append_message.call(view, ...args as [any, any, any, any]),
-      updateTokenCounter: () => { throw new Error('wstrzyknięty błąd renderowania'); },
-      send_message: (opts: FixturePayload) => send_message.call(view, opts),
-    };
-    notifier.setNoticeDeliverer((notice: FixturePayload) => notice.kind === 'question'
-      ? _deliverSubTaskQuestion.call(view, notice.question) : false);
+    const { view, window, events, errors } = chatFixture(plugin, origin);
+    view.updateTokenCounter = () => { throw new Error('wstrzyknięty błąd renderowania'); };
     const task = registry.create({ id: 'render-error', threadId: 'render-thread', name: 'Sub', origin, background: true });
     try {
       const opened = registry.openParentQuestion(task.id, 'Jaki zakres?');
@@ -37,6 +23,8 @@ export default ({
       await new Promise(resolve => setTimeout(resolve, 30));
       notifier.drain();
       await new Promise(resolve => setTimeout(resolve, 30));
+      assert(events.length === 1 && errors.length === 1 && String(errors[0]).includes('wstrzyknięty błąd renderowania'),
+        `Nie osiągnięto zapisu i błędu renderowania: ${JSON.stringify({ events, errors: errors.map(String) })}.`);
       assert(window.messages.filter((message: FixturePayload) => message.questionId === opened.question.id).length === 1,
         `Pytanie dopisano więcej niż raz: ${JSON.stringify(window.messages)}.`);
       assert(!notifier.pendingNotices().some((notice: FixturePayload) => notice.kind === 'question' && notice.question.id === opened.question.id),
