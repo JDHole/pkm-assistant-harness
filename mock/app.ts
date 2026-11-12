@@ -332,36 +332,82 @@ export function createMockApp(vaultRoot: string): Runtime {
   };
 
   // ── workspace ──
-  // `createMockLeaf()` — atrapa WorkspaceLeaf. `getLeaf()` zwracało `null`, co wywalało KAŻDEGO
-  // z czterech wołaczy w repo (`ReleaseNotesView.open`, `PluginItemView.setViewState`, dwóch miejsc
-  // z `.openFile()`) na `Cannot read properties of null` — leaf jest tu ATRAPĄ, nie brakiem
-  // miejsca docelowego (ogony-ogA, fala 3, 2026-09-04). `setViewState`/`openFile` są no-opami
-  // (harness nie renderuje realnego widoku), ale nie rzucają — dokładnie to, czego potrzebuje
-  // bootstrap, żeby przejść przez `workspace.getLeaf(...).setViewState(...)` bez wybuchu.
-  const createMockLeaf = (): Runtime => ({
-    containerEl: createMockEl('div'),
-    view: null,
-    async setViewState() { return true; },
-    async openFile() { return; },
-    detach() {},
-    setPinned() {},
-  });
+  const leaves: Runtime[] = [];
+  const handlers = new Map<string, Set<Runtime>>();
+  let activeFile: Runtime = null;
+  const createMockLeaf = (): Runtime => {
+    let viewType = 'empty';
+    let file: Runtime = null;
+    let viewState: Runtime = { type: viewType };
+    const leaf: Runtime = {
+      containerEl: createMockEl('div'),
+      view: {
+        get file() { return file; },
+        getViewType() { return viewType; },
+        getDisplayText() { return file?.basename ?? viewType; },
+      },
+      async setViewState(state: Runtime) {
+        viewState = state;
+        viewType = state.type;
+        file = state.state?.file ? vault.getFileByPath(state.state.file) : null;
+        if (file) workspace.setActiveLeaf(leaf);
+        return true;
+      },
+      getViewState() { return viewState; },
+      async openFile(next: Runtime) {
+        file = next;
+        viewType = 'markdown';
+        viewState = { type: 'markdown', state: { file: next.path } };
+        workspace.setActiveLeaf(leaf);
+      },
+      detach() {
+        const index = leaves.indexOf(leaf);
+        if (index !== -1) leaves.splice(index, 1);
+        if (workspace.activeLeaf === leaf) workspace.activeLeaf = null;
+      },
+      setPinned() {},
+    };
+    leaves.push(leaf);
+    return leaf;
+  };
   const workspace: Runtime = {
     containerEl: createMockEl('div'),
     activeLeaf: null,
     onLayoutReady(cb: Runtime) { queueMicrotask(() => { try { cb(); } catch (e) { console.error('[harness] onLayoutReady cb error:', e); } }); },
-    on(name: string, fn: Runtime) { return eventHandle(name, fn); },
-    off() {}, offref() {}, trigger() {},
-    getLeaf() { return createMockLeaf(); },
-    getLeavesOfType() { return []; },
+    on(name: string, fn: Runtime) {
+      if (!handlers.has(name)) handlers.set(name, new Set());
+      handlers.get(name)!.add(fn);
+      return eventHandle(name, fn);
+    },
+    off(name: string, fn: Runtime) { handlers.get(name)?.delete(fn); },
+    offref(ref: Runtime) { handlers.get(ref.name)?.delete(ref.fn); },
+    trigger(name: string, ...args: Runtime[]) { for (const fn of handlers.get(name) ?? []) fn(...args); },
+    getLeaf(newLeaf?: Runtime) {
+      if (newLeaf === true || newLeaf === 'tab') return createMockLeaf();
+      return workspace.activeLeaf ?? leaves[0] ?? createMockLeaf();
+    },
+    setActiveLeaf(leaf: Runtime) {
+      const changed = workspace.activeLeaf !== leaf;
+      workspace.activeLeaf = leaf;
+      if (changed) workspace.trigger('active-leaf-change', leaf);
+      if (leaf?.view.file) {
+        activeFile = leaf.view.file;
+        workspace.trigger('file-open', activeFile);
+      }
+    },
+    getLeavesOfType(type: string) { return leaves.filter(leaf => leaf.view.getViewType() === type); },
     getRightLeaf() { return null; },
     getLeftLeaf() { return null; },
-    getMostRecentLeaf() { return null; },
+    getMostRecentLeaf() { return workspace.activeLeaf; },
     revealLeaf() {},
     getActiveViewOfType() { return null; },
-    getActiveFile() { return null; },
-    iterateAllLeaves() {},
-    iterateRootLeaves() {},
+    getActiveFile() { return activeFile; },
+    iterateAllLeaves(cb: Runtime) { leaves.forEach(cb); },
+    iterateRootLeaves(cb: Runtime) { leaves.forEach(cb); },
+    async openLinkText(linktext: string, sourcePath: string, newLeaf?: Runtime) {
+      const file = metadataCache.getFirstLinkpathDest(linktext, sourcePath);
+      if (file instanceof TFile) await workspace.getLeaf(newLeaf).openFile(file);
+    },
     get rightSplit() { return { collapsed: false, toggle() {} }; },
     get leftSplit() { return { collapsed: false, toggle() {} }; },
   };

@@ -399,3 +399,5 @@ scenariuszy offline. `_runner` i 51 przekazują origin rzeczywistej trwałej ses
 43 sprawdza brak zgody na propozycję, zgodę przy przyjęciu i autonomię operacji poza
 kopią po przełączeniu agenta. Scenariusze 68–73 i kontrola jednokrotnego zapisu w 54
 pozostają częścią bramki. Wszystko działa w Node, bez Obsidiana/CDP.
+
+Stanowa atrapa workspace śledzi otwarte pliki i karty, a scenariusz 76 sprawdza nawigację `obsidian_app` oraz odmowę No-Go.

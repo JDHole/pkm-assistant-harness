@@ -83,3 +83,35 @@ test('vault.process: gdy JEDEN callback rzuca, kolejne wywołanie na tej samej �
     await t.throwsAsync(failing, { message: 'boom' });
     t.is(await following, 'START\nOK\n');
 });
+
+test('workspace: otwieranie linku, karty, widoki i zdarzenia', async t => {
+    const vaultRoot = tempVault('workspace');
+    t.teardown(() => fs.rmSync(vaultRoot, { recursive: true, force: true }));
+    fs.mkdirSync(path.join(vaultRoot, 'Notatki'), { recursive: true });
+    fs.writeFileSync(path.join(vaultRoot, 'Notatki', 'powitanie.md'), 'Cześć');
+    fs.writeFileSync(path.join(vaultRoot, 'Notatki', 'druga.md'), 'Druga');
+    const app = createMockApp(vaultRoot);
+    const opened: string[] = [];
+    const changes: string[] = [];
+    app.workspace.on('file-open', (file: { path: string }) => opened.push(file.path));
+    app.workspace.on('active-leaf-change', (leaf: { view: { file: { path: string } } }) => changes.push(leaf.view.file.path));
+    t.is(app.workspace.getActiveFile(), null);
+    await app.workspace.openLinkText('Notatki/powitanie', '');
+    t.is(app.workspace.getActiveFile().path, 'Notatki/powitanie.md');
+    const second = app.workspace.getLeaf('tab');
+    await second.openFile(app.vault.getFileByPath('Notatki/druga.md'));
+    const leaves: unknown[] = [];
+    app.workspace.iterateAllLeaves((leaf: unknown) => leaves.push(leaf));
+    t.is(leaves.length, 2);
+    t.is(app.workspace.activeLeaf, second);
+    t.is(app.workspace.getActiveFile().path, 'Notatki/druga.md');
+    t.deepEqual(opened, ['Notatki/powitanie.md', 'Notatki/druga.md']);
+    t.deepEqual(changes, ['Notatki/powitanie.md', 'Notatki/druga.md']);
+    t.deepEqual(second.getViewState(), { type: 'markdown', state: { file: 'Notatki/druga.md' } });
+    const chat = app.workspace.getLeaf('tab');
+    await chat.setViewState({ type: 'pkm-chat' });
+    t.is(app.workspace.getActiveFile().path, 'Notatki/druga.md');
+    t.is(chat.view.getViewType(), 'pkm-chat');
+    await app.workspace.openLinkText('nieistniejaca', '');
+    t.is(app.workspace.getActiveFile().path, 'Notatki/druga.md');
+});
