@@ -325,3 +325,16 @@ export function lastToolResults(request: Runtime): string[] {
   }
   return out;
 }
+
+/** Extract image URL parts from a parsed OpenAI-compatible request. */
+export function requestImageParts(request: unknown): Array<{ role: string; url: string }> {
+  if (!request || typeof request !== 'object' || !('messages' in request) || !Array.isArray(request.messages)) return [];
+  const result: Array<{ role: string; url: string }> = [];
+  for (const message of request.messages) {
+    if (!message || typeof message !== 'object' || typeof message.role !== 'string' || !Array.isArray(message.content)) continue;
+    for (const part of message.content) {
+      if (part?.type === 'image_url' && typeof part.image_url?.url === 'string') result.push({ role: message.role, url: part.image_url.url });
+    }
+  }
+  return result;
+}

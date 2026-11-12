@@ -9,10 +9,11 @@
  *   `run.ts`               → `dist/run.js`        (dry-boot i bieg eksploracyjny)
  *   `scenarios/_runner.ts` → `dist/scenarios.js`  (scenariusze-łamacze)
  *
- * SEDNO — dwa aliasy, o RÓŻNYM pochodzeniu (od 2026-09-11):
+ * SEDNO — aliasy o RÓŻNYM pochodzeniu (od 2026-09-11):
  *   `@plugin/<cokolwiek>` → `<plugin>/<cokolwiek>`                  (kod wtyczki, przez barrele,
  *                                                                    korzeń z `lib/pluginRoot.ts`)
  *   `obsidian`            → `<TEN katalog>/test-support/obsidian.ts` (atrapa hosta, TU, nie w pluginie)
+ *   `electron`            → `<TEN katalog>/test-support/electron.ts` (atrapa zrzutu)
  * Bundlujemy DOKŁADNIE ten kod wtyczki, który dostaje użytkownik; podstawiamy tylko moduł,
  * którego poza Obsidianem fizycznie nie ma. Atrapa mieszka w TYM repo (a nie w repo pluginu, jak
  * do 2026-09-07/11) — walidator katalogu Obsidiana lintuje CAŁE repo pluginu i flagował w niej
@@ -113,7 +114,7 @@ function rozwiazWPluginie(korzen: string, wzgledna: string): string {
 }
 
 /**
- * Dwa aliasy (patrz nagłówek): `@plugin/` do drzewa pluginu (`korzen`), `obsidian` do atrapy
+ * Aliasy (patrz nagłówek): `@plugin/` do drzewa pluginu (`korzen`), `obsidian` i `electron` do atrap
  * TEGO repo (`HARNESS_DIR`) — dlatego `korzen` służy tylko pierwszemu z nich.
  */
 function pluginTreePlugin(korzen: string): Plugin {
@@ -125,6 +126,7 @@ function pluginTreePlugin(korzen: string): Plugin {
                 path: rozwiazWPluginie(korzen, args.path.slice(PREFIKS.length)),
             }));
             build.onResolve({ filter: /^obsidian$/ }, () => ({ path: atrapaObsidiana }));
+            build.onResolve({ filter: /^electron$/ }, () => ({ path: path.join(HARNESS_DIR, 'test-support', 'electron.ts') }));
         },
     };
 }
@@ -134,7 +136,7 @@ function pluginTreePlugin(korzen: string): Plugin {
  * niżej): TYLKO alias `@plugin/`, tak samo jak dla `run.js`/`scenarios.js` (te same źródła
  * pluginu). `obsidian` NIE jest tu aliasowany na atrapę — `companion/` jest PRAWDZIWĄ wtyczką
  * Obsidiana (CJS), a prawdziwy host dostarcza ten moduł sam w runtime; dlatego build companiona
- * niżej dokłada `external: ['obsidian']`, dokładnie jak produkcyjny `esbuild.js` pluginu.
+ * niżej dokłada `external: ['obsidian', 'electron']`, dokładnie jak produkcyjny `esbuild.js` pluginu.
  */
 function pluginAliasPlugin(korzen: string): Plugin {
     return {
@@ -234,7 +236,7 @@ async function buildCompanion(): Promise<void> {
         // Runtime hosta, nie paczka z npm - musi zostać POZA bundlem, inaczej wciągnęlibyśmy
         // całego Obsidiana (dokładnie jak `external: ['obsidian']` w produkcyjnym `esbuild.js`
         // pluginu).
-        external: ['obsidian'],
+        external: ['obsidian', 'electron'],
         // Trzy stałe wkompilowane DOSŁOWNIE (nie import - `companion/buildInfo.ts` czyta je jako
         // globalne identyfikatory przez `typeof` guard, patrz jego nagłówek). `JSON.stringify`
         // dla stringów (literał w cudzysłowie), `String(...)` dla boola (goły token `true`/`false`,

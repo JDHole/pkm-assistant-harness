@@ -1,7 +1,9 @@
 /** Minimalny gospodarz czatu w Node. DOM i zapis sesji są atrapami I/O. */
+import { formatSessionEvent } from '@plugin/modules/memory/activeSessionFormat.js';
 import { RollingWindow } from '@plugin/modules/chat/chat/RollingWindow.js';
 import { append_message, _renderUserText } from '@plugin/modules/chat/chat/chat_messages.js';
-import { send_message, set_generating, _finalizeTurn, _releaseStreamCtx, _drainSubTasks, _chatExecuteToolCall, _deliverSubTaskQuestion, _deliverSubTaskResult } from '@plugin/modules/chat/chat/chat_streaming.js';
+import { send_message, set_generating, _finalizeTurn, _releaseStreamCtx, _drainSubTasks, _chatExecuteToolCall, _chatOnToolResults, _deliverSubTaskQuestion, _deliverSubTaskResult } from '@plugin/modules/chat/chat/chat_streaming.js';
+import { _isCurrentModelVision } from '@plugin/modules/chat/chat/chat_model.js';
 import { createModelForRole } from '@plugin/modules/models/index.js';
 import { createMockEl } from '../test-support/dom-shim.js';
 import { resolveToolsForAgent } from '../lib/runTurn.js';
@@ -10,10 +12,11 @@ import type { FixturePayload } from './_asserts.js';
 export function chatFixture(plugin: FixturePayload, origin: FixturePayload, beforeSave?: () => Promise<void>) {
   const window = new RollingWindow();
   const events: FixturePayload[] = [];
+  const persisted: string[] = [];
   const errors: unknown[] = [];
   const turns = { activeQuestions: 0, maxQuestions: 0, completed: 0, active: 0 };
   const memory = { activeSessionPath: origin.sessionPath, sessionEpoch: origin.sessionEpoch,
-    async appendSessionEvent(_path: string, event: FixturePayload) { events.push(event); await beforeSave?.(); } };
+    async appendSessionEvent(_path: string, event: FixturePayload) { events.push(event); persisted.push(formatSessionEvent(event.type, event, event.timestamp)); await beforeSave?.(); } };
   const actualManager = plugin.agentManager;
   const agentManager = { getActiveAgent: () => actualManager.getActiveAgent(), getAgentMemory: () => memory,
     getActiveSystemPromptWithMemory: (...args: FixturePayload[]) => actualManager.getActiveSystemPromptWithMemory(...args) };
@@ -48,12 +51,12 @@ export function chatFixture(plugin: FixturePayload, origin: FixturePayload, befo
     _ensureAgentMessageContainer() { view.current_message_container = createMockEl(); view.current_message_text = createMockEl(); },
     get_chat_model: ({ agent }: FixturePayload) => createModelForRole(plugin, 'main', agent),
     _chatResolveTools: (turn: FixturePayload) => resolveToolsForAgent(plugin, turn.agent),
-    _chatExecuteToolCall,
-    _chatOnIterationStart() {}, _chatOnToolCallsParsed() {}, _chatOnToolResults() {},
+    _chatExecuteToolCall, _isCurrentModelVision,
+    _chatOnIterationStart() {}, _chatOnToolCallsParsed() {}, _chatOnToolResults,
     _chatBeforeContinue() {}, _chatOnUsage() {}, _chatOnBackstop() {}, _isTurnActiveTab: () => true,
     handle_error(error: unknown) { errors.push(error); view.is_generating = false; },
   };
   plugin.subTaskNotifier.setNoticeDeliverer((notice: FixturePayload) => notice.kind === 'question'
     ? _deliverSubTaskQuestion.call(view, notice.question) : _deliverSubTaskResult.call(view, notice.task));
-  return { view, window, events, errors, turns };
+  return { view, window, events, persisted, errors, turns };
 }
