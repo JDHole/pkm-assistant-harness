@@ -401,5 +401,6 @@ kopią po przełączeniu agenta. Scenariusze 68–73 i kontrola jednokrotnego za
 pozostają częścią bramki. Wszystko działa w Node, bez Obsidiana/CDP.
 
 Stanowa atrapa workspace śledzi otwarte pliki i karty, a scenariusz 76 sprawdza nawigację `obsidian_app` oraz odmowę No-Go.
+Scenariusz 77 sprawdza produkcyjną blokadę zrzutu oraz przygotowany przepływ zrzutu po jawnym włączeniu w teście.
 
 Atrapa `electron` domyślnie odrzuca zrzut bez ustawionej ramki; scenariusz 77 sprawdza zrzut treści aktywnej karty, przekazanie obrazu przez czat i ochronę No-Go.

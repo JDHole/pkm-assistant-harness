@@ -1,8 +1,14 @@
 import { requestImageParts, textTurn, toolCallTurn } from '../mock/fake-llm-server.js';
+import { createObsidianAppTool } from '@plugin/modules/tools/index.js';
+import { createCapturePort, createWorkspacePort } from '@plugin/modules/obsidian-app/index.js';
+import { TFile } from '../test-support/obsidian.js';
+import * as electron from '../test-support/electron.js';
 import { fakeCaptureCalls, fakeCaptureRects, fakeCaptureResizes, resetFakeCapture, setFakeCapture } from '../test-support/electron.js';
 import { chatFixture } from './_chat_fixture.js';
 import { assert } from './_asserts.js';
 import type { FixturePayload, Scenario } from './_asserts.js';
+
+type WorkspaceFile = Parameters<typeof createWorkspacePort>[1] extends (value: unknown) => value is infer F ? F : never;
 
 const origin = { agentName: 'Tester', sessionPath: 'Chats/screenshot.md', sessionEpoch: 'screenshot', tabKey: 'screenshot' };
 const requests: FixturePayload[] = [];
@@ -29,11 +35,32 @@ export default ({
       ? textTurn('Zakończono.') : toolCallTurn('obsidian_app', action === 'open' ? { action, path: 'Notatki/powitanie.md' } : { action });
   },
   async asserts({ plugin }: FixturePayload) {
+    const originalTool = plugin.toolRegistry.getTool('obsidian_app');
     try {
       active = true;
       setFakeCapture({ width: 3000, height: 2000, bytes: new Uint8Array([255, 216, ...Array(30).fill(123), 255, 217]) });
       let approvals = 0;
       plugin.approvalManager.setApprovalHandler(() => { approvals++; return { result: 'approve', reason: '' }; });
+      assert(originalTool !== null, 'Plugin nie zarejestrował obsidian_app.');
+      action = 'screenshot';
+      const disabled = chatFixture(plugin, origin);
+      disabled.view.currentAutonomy = 'edge';
+      await disabled.view.send_message({ injectedText: 'Zrób zrzut.' });
+      assert(disabled.errors.length === 0 && requests.length === 2, `Produkcja: ${disabled.errors.map(String)}, zapytania: ${requests.length}`);
+      const definition = requests[0].tools.filter((tool: FixturePayload) => tool.function?.name === 'obsidian_app');
+      assert(definition.length === 1 && JSON.stringify(definition[0].function.parameters.properties.action.enum) === JSON.stringify(['state', 'open']), `Definicja: ${JSON.stringify(definition)}`);
+      const disabledResults = requests[1].messages.filter((message: FixturePayload) => message.role === 'tool');
+      assert(disabledResults.length === 1 && JSON.parse(disabledResults[0].content).error.code === 'screenshot_disabled', `Odmowa produkcyjna: ${JSON.stringify(disabledResults)}`);
+      assert(Number(approvals) === 0, `Zgody produkcyjne: ${approvals}`);
+      assert(fakeCaptureCalls() === 0, `Zrzuty produkcyjne: ${fakeCaptureCalls()}`);
+      assert(requestImageParts(requests[1]).length === 0 && !JSON.stringify(requests[1]).includes('image_url'), `Obraz produkcyjny: ${JSON.stringify(requests[1])}`);
+
+      // Dalsze przypadki sprawdzają kod przygotowany na osobną kartę włączenia zrzutu.
+      plugin.toolRegistry.registerTool(createObsidianAppTool(
+        createWorkspacePort(plugin.app, (value): value is WorkspaceFile => value instanceof TFile),
+        createCapturePort(() => electron), { screenshot: 'enabled' },
+      ));
+      requests.length = 0;
       action = 'open';
       const opening = chatFixture(plugin, origin);
       opening.view.currentAutonomy = 'edge';
@@ -83,6 +110,9 @@ export default ({
       assert(third.errors.length === 0 && requests.length === 2, `Błędy lub zapytania: ${third.errors.map(String)}, ${requests.length}`);
       assert(fakeCaptureCalls() === 1 && requestImageParts(requests[1]).length === 1, `Karta No-Go w tle: ${fakeCaptureCalls()}, ${JSON.stringify(requestImageParts(requests[1]))}`);
       assert(JSON.stringify(fakeCaptureRects()) === JSON.stringify([{ x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height }]), `Prostokąt przy karcie w tle: ${JSON.stringify(fakeCaptureRects())}`);
-    } finally { active = false; resetFakeCapture(); plugin.subTaskNotifier.setNoticeDeliverer(null); }
+    } finally {
+      if (originalTool) plugin.toolRegistry.registerTool(originalTool);
+      active = false; resetFakeCapture(); plugin.subTaskNotifier.setNoticeDeliverer(null);
+    }
   },
 } satisfies Scenario);
