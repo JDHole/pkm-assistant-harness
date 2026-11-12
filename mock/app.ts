@@ -339,9 +339,23 @@ export function createMockApp(vaultRoot: string): Runtime {
     let viewType = 'empty';
     let file: Runtime = null;
     let viewState: Runtime = { type: viewType };
+    // The capture boundary needs a real HTMLElement identity and a content-only rectangle.
+    if (typeof globalThis.HTMLElement === 'undefined') {
+      Object.assign(globalThis, { HTMLElement: class HTMLElement {} });
+    }
+    const contentEl = new globalThis.HTMLElement();
+    Object.assign(contentEl, {
+      isShown: () => true,
+      getBoundingClientRect: () => ({ x: 300, y: 80, left: 300, top: 80, right: 1200, bottom: 780, width: 900, height: 700 }),
+      ownerDocument: { defaultView: { innerWidth: 1920, innerHeight: 1080 }, querySelectorAll: () => [] },
+      querySelector: () => null,
+      querySelectorAll: () => [],
+    });
     const leaf: Runtime = {
       containerEl: createMockEl('div'),
       view: {
+        containerEl: { isShown: () => true },
+        contentEl,
         get file() { return file; },
         getViewType() { return viewType; },
         getDisplayText() { return file?.basename ?? viewType; },

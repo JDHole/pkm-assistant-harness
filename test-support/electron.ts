@@ -2,11 +2,14 @@ type Frame = { width: number; height: number; bytes: Uint8Array };
 let frame: Frame | null = null;
 let calls = 0;
 let resizes: Array<{ width: number; height: number }> = [];
+type Rect = { x: number; y: number; width: number; height: number };
+let rects: Rect[] = [];
 
 export function setFakeCapture(value: Frame): void { frame = { ...value, bytes: value.bytes.slice() }; }
-export function resetFakeCapture(): void { frame = null; calls = 0; resizes = []; }
+export function resetFakeCapture(): void { frame = null; calls = 0; resizes = []; rects = []; }
 export function fakeCaptureCalls(): number { return calls; }
 export function fakeCaptureResizes(): Array<{ width: number; height: number }> { return resizes.map(size => ({ ...size })); }
+export function fakeCaptureRects(): Rect[] { return rects.map(rect => ({ ...rect })); }
 
 function nativeImage(value: Frame) {
   return {
@@ -19,8 +22,9 @@ function nativeImage(value: Frame) {
   };
 }
 export const remote = { getCurrentWebContents: () => ({
-  async capturePage() {
+  async capturePage(rect: Rect) {
     calls++;
+    rects.push({ ...rect });
     if (!frame) throw new Error('Fake capture unavailable');
     return nativeImage(frame);
   },

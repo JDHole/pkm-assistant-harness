@@ -402,4 +402,4 @@ pozostają częścią bramki. Wszystko działa w Node, bez Obsidiana/CDP.
 
 Stanowa atrapa workspace śledzi otwarte pliki i karty, a scenariusz 76 sprawdza nawigację `obsidian_app` oraz odmowę No-Go.
 
-Atrapa `electron` domyślnie odrzuca zrzut bez ustawionej ramki; scenariusz 77 sprawdza przekazanie obrazu przez czat i odmowę przy widocznej karcie No-Go.
+Atrapa `electron` domyślnie odrzuca zrzut bez ustawionej ramki; scenariusz 77 sprawdza zrzut treści aktywnej karty, przekazanie obrazu przez czat i ochronę No-Go.
