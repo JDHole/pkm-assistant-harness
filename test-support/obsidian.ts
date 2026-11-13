@@ -602,7 +602,31 @@ export class Plugin {
 }
 
 // ── default export: obiekt ze wszystkimi symbolami (src/main.ts: `import Obsidian from "obsidian"`) ──
+// Native menu host boundary for the M3 U2 phone conversation menu.
+export class MenuItem {
+    title = '';
+    icon = '';
+    disabled = false;
+    callback: (() => unknown) | null = null;
+    setTitle(title: string) { this.title = title; return this; }
+    setIcon(icon: string) { this.icon = icon; return this; }
+    setDisabled(disabled: boolean) { this.disabled = disabled; return this; }
+    onClick(callback: () => unknown) { this.callback = callback; return this; }
+}
+export class Menu {
+    static opened: Menu[] = [];
+    items: Array<MenuItem | 'separator'> = [];
+    addItem(build: (item: MenuItem) => unknown) {
+        const item = new MenuItem(); build(item); this.items.push(item); return this;
+    }
+    addSeparator() { this.items.push('separator'); return this; }
+    showAtMouseEvent(_event: unknown) { Menu.opened.push(this); return this; }
+    close() { Menu.opened = Menu.opened.filter(menu => menu !== this); }
+}
+
 const obsidian = {
+    Menu,
+    MenuItem,
     Platform,
     Notice,
     Plugin,
