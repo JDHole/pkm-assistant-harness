@@ -7,6 +7,7 @@ import { errorTurn, textTurn } from '../mock/fake-llm-server.js';
 import { buildPlanNotice } from '@plugin/modules/sub-agents/index.js';
 import type { SubTask, SubTaskNotice, SubTaskRegistry } from '@plugin/modules/sub-agents/index.js';
 import { assert } from './_asserts.js';
+import { withoutMessageTime } from './_messageTime.js';
 import type { FixturePayload, Scenario } from './_asserts.js';
 
 type NodeId = 'A' | 'B' | 'C';
@@ -200,9 +201,9 @@ export function dependencyPlanScenario(failA: boolean): Scenario {
     },
     async offlineScript({ request }: FixturePayload) {
       const messages: Array<{ role: string; content: unknown }> = request?.messages ?? [];
-      const message = messages.find(m => m.role === 'user' && typeof m.content === 'string' && /^PLAN-NODE-[ABC](?:\n|$)/.test(m.content));
+      const message = messages.find(m => m.role === 'user' && typeof m.content === 'string' && /^PLAN-NODE-[ABC](?:\n|$)/.test(withoutMessageTime(m.content)));
       if (!message) return textTurn('Tura kontrolna zakończona; plan sprawdzi harness przez MCP.');
-      const prompt = message.content as string;
+      const prompt = withoutMessageTime(message.content as string);
       const id = prompt.charAt('PLAN-NODE-'.length) as NodeId;
       starts.push(id);
       if (id === 'A' || id === 'B') {

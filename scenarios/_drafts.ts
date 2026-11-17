@@ -7,6 +7,7 @@ import { desktopDraftPorts } from '@plugin/modules/tools/index.js';
 import type { SubTask } from '@plugin/modules/sub-agents/index.js';
 import { lastToolResults, textTurn, toolCallTurn } from '../mock/fake-llm-server.js';
 import { assert } from './_asserts.js';
+import { messageTimePrefix, withoutMessageTime } from './_messageTime.js';
 import type { FixturePayload, Scenario } from './_asserts.js';
 
 export const FILE = 'Notatki/kopia.md';
@@ -87,9 +88,10 @@ export function script() {
   const requests: string[] = [];
   return { programs, calls, results, requests,
     async respond({ request }: FixturePayload) {
-      const user = (request?.messages ?? []).find((m: FixturePayload) => m.role === 'user' && typeof m.content === 'string' && /^P6-[A-Z]+(?:\n|$)/.test(m.content));
+      const user = (request?.messages ?? []).find((m: FixturePayload) => m.role === 'user' && typeof m.content === 'string' && /^P6-[A-Z]+(?:\n|$)/.test(withoutMessageTime(m.content)));
       if (!user) return textTurn('Tura kontrolna; harness sprawdzi kopie przez narzędzia prowadzącego.');
-      const id = user.content.split('\n')[0].slice(3) as string;
+      assert(messageTimePrefix.test(user.content), 'Pierwsza wiadomość zadania suba ma linię czasu przed treścią');
+      const id = withoutMessageTime(user.content).split('\n')[0].slice(3) as string;
       requests.push(id);
       const n = calls.get(id) ?? 0;
       if (n > 0) {

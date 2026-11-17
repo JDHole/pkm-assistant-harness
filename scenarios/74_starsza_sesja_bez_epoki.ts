@@ -1,17 +1,20 @@
 import { AgentMemory } from '@plugin/modules/memory/index.js';
 import { textTurn, toolCallTurn } from '../mock/fake-llm-server.js';
 import { chatFixture } from './_chat_fixture.js';
+import { messageTimePrefix, withoutMessageTime } from './_messageTime.js';
+import { assert } from './_asserts.js';
 import { base, script, FILE, write, read, equal, observe, listed, persisted, toolResults, bounded } from './_drafts.js';
 import type { FixturePayload, Scenario } from './_asserts.js';
 
 const model = script();
 const scenario = base('74_starsza_sesja_bez_epoki', 'starsza sesja dostaje trwałą epokę przed delegacją', model);
 let mainCalls = 0, failedCalls = 0, retryCalls = 0;
+let chatRequest = '';
 export default ({ ...scenario,
   fixtures: [...scenario.fixtures!, { path: '.pkm-assistant/sub-agents/epoch-reader/SUB_AGENT.yaml',
     content: 'name: epoch-reader\ndescription: Odczyt bez kopii\nrole: researcher\ntools: [read]\nmax_iterations: 4\nenabled: true\n' }],
   offlineScript: async (ctx: FixturePayload) => {
-    const has = (text: string) => ctx.request.messages.some((m: FixturePayload) => m.role === 'user' && m.content === text);
+    const has = (text: string) => ctx.request.messages.some((m: FixturePayload) => m.role === 'user' && typeof m.content === 'string' && withoutMessageTime(m.content) === text);
     if (has('P5 retry send')) return retryCalls++ === 0
       ? toolCallTurn('delegate', { task: 'P6-RETRY', aspect: 'worker' }, { callId: 'p5-retry' }) : textTurn('Ponowienie działa.');
     if (has('P5 failure send')) {
@@ -20,7 +23,8 @@ export default ({ ...scenario,
       if (step === 1) return toolCallTurn('delegate', { task: 'P6-DENIED', aspect: 'worker' }, { callId: 'p5-denied' });
       return textTurn('Rozmowa działa.');
     }
-    if ((ctx.request.messages ?? []).some((m: FixturePayload) => m.role === 'user' && m.content === 'F1 legacy send')) {
+    if (has('F1 legacy send')) {
+      chatRequest = ctx.request.messages.find((m: FixturePayload) => m.role === 'user' && typeof m.content === 'string' && withoutMessageTime(m.content) === 'F1 legacy send').content;
       return mainCalls++ === 0 ? toolCallTurn('delegate', { task: 'P6-LEGACY', aspect: 'worker' }) : textTurn('Zlecono.');
     }
     return model.respond(ctx);
@@ -53,6 +57,8 @@ export default ({ ...scenario,
       const epoch = memory.sessionEpoch;
       equal(/^[0-9a-f]{32}$/.test(epoch), true, 'Poprawna epoka');
       const bytes = await plugin.app.vault.adapter.read(path);
+      assert(messageTimePrefix.test(chatRequest) && withoutMessageTime(chatRequest) === 'F1 legacy send', 'Model czatu widzi linię czasu i treść użytkownika');
+      assert(bytes.includes('F1 legacy send') && !bytes.includes(chatRequest.split('\n')[0]), 'Sesja zapisuje treść bez linii czasu');
       equal(bytes.startsWith(header), true, 'Niezmieniony prefiks legacy');
       equal(memory._parseFrontmatter(bytes).epoch, null, 'Epoka wyłącznie w dopisku');
       equal((bytes.match(/— session epoch/g) ?? []).length, 1, 'Jeden event epoki');

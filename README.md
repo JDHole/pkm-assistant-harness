@@ -51,7 +51,7 @@ PKM_ASSISTANT_ROOT=/sciezka/do/pluginu npm run scenarios   # plugin gdzie indzie
 ```bash
 npm run harness              # build + dry-boot: plugin wstaje w Node, raport DoD (bez modelu)
 npm run selftest             # pełny cykl pętli z fake-serwerem SSE (offline, bez klucza, 0 kosztów)
-npm run scenarios            # 63 scenariuszy-łamaczy [OFFLINE deterministyczny] (regression suite)
+npm run scenarios            # 67 scenariuszy-łamaczy [OFFLINE deterministyczny] (regression suite)
 npm run scenarios:live       # te same scenariusze na ŻYWYM DeepSeeku (wymaga klucza, płatne grosze)
 npm run build                # sam build (dist/)
 npm run build:companion      # build wtyczki-nosiciela CLI (dist/companion/) — patrz niżej
@@ -342,6 +342,7 @@ Do tego **14 pisarze sesji (S36)** — event-log przeżywa autozapis i restart (
 - **73 plan i Stop** — C czyta zamknięte A/B i zapisuje własną kopię; Stop zachowuje dorobek, blokuje następnika i późne write.
 
 Scenariusz **54** nadal sprawdza pojedynczy zapis, właściciela sesji i dorobek, teraz w kopii.
+Skrypty 66–75 rozpoznają zadanie po zdjęciu najwyżej jednej początkowej linii czasu PL/EN (`scenarios/_messageTime.ts`); 74 sprawdza także linię czasu w żądaniu czatu i jej brak w zapisanej sesji, a skrypt kopii sprawdza ją w zadaniu suba.
 Atrapa desktopowego hosta udostępnia `window.require`, aby produkcyjny magazyn mógł
 atomowo publikować pliki w temp-vaulcie. Nowe scenariusze czekają na zdarzenia/barierę,
 sprawdzają zwrotki prawdziwego MCP i odtwarzają magazyn z dysku przez publiczne barrele.
